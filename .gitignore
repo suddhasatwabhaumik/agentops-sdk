@@ -1,0 +1,90 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+bin/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+active/
+conda-env/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~
+.DS_Store
+
+# Testing and Coverage
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+eval_quality_gate_summary.md
+eval_*_summary.md
+
+# Environment configurations and secrets
+.env
+.env.local
+.env.*.local
+*.env
+secret.json
+service_account.json
+*.key
+*.pem
+
+# Terraform exclusions
+.terraform/
+*.tfstate
+*.tfstate.backup
+tfplan
+tfplan.json
+*.tfvars
+*.tfvars.json
+
+# Local artifacts or package files
+venv_check/
+google_cloud_aiplatform*.whl
+audit_fallback.jsonl
+*.jsonl
+
+# Internal tooling and POC sandboxes (not for customer release)
+scripts/
+service_account_keys/
+poc_agents/
+demo/

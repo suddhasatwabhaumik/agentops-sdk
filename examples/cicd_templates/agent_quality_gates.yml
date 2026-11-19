@@ -1,0 +1,86 @@
+# Copyright 2026 Google. This software is provided as-is, without
+# warranty or representation for any use or purpose. Your use of it is
+# subject to your agreement with Google.
+
+name: AgentOps CI/CD Evaluation Quality Gates
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * *' # Nightly evaluation at 02:00 UTC
+
+jobs:
+  # Tier 1: Fast In-Memory / Heuristic Evaluation for Pull Requests
+  pr-in-memory-quality-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[eval,dev]"
+
+      - name: Run Unit & Tutorial Quality Gate Tests (In-Memory Mode)
+        run: |
+          pytest -v tests/unit/test_evaluation.py
+          pytest -v -m quality_gate examples/tutorial/13_evaluation_quality_gates/test_quality_gate.py --eval-mode=in_memory --eval-report-path=eval_quality_gate_summary.md
+
+      - name: Publish Gate Summary to GitHub Step Summary
+        if: always()
+        run: |
+          if [ -f eval_quality_gate_summary.md ]; then
+            cat eval_quality_gate_summary.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # Tier 2: Live Vertex AI Evaluation on Merge to Main & Nightly
+  vertex-cloud-quality-gate:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_TST_DEPLOYER_SA }}
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[eval,dev]"
+
+      - name: Run Quality Gate Tests (Live Vertex AI Mode)
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID || vars.GCP_PROJECT_ID }}
+          GOOGLE_CLOUD_LOCATION: 'europe-west4'
+        run: |
+          pytest -v -m quality_gate examples/tutorial/13_evaluation_quality_gates/test_quality_gate.py --eval-mode=vertex --eval-report-path=eval_quality_gate_summary.md
+
+      - name: Publish Gate Summary to GitHub Step Summary
+        if: always()
+        run: |
+          if [ -f eval_quality_gate_summary.md ]; then
+            cat eval_quality_gate_summary.md >> $GITHUB_STEP_SUMMARY
+          fi

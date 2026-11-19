@@ -1,0 +1,13 @@
+# Port overrides for the full_stack compose file, used by stack.sh.
+# On a developer machine 3000 and 8888 are often taken (Grafana elsewhere, other tools).
+services:
+  grafana:
+    ports: !override
+      - "3002:3000"
+  otel-collector:
+    ports: !override
+      - "14317:4317"
+      - "14318:4318"
+      - "18888:8888"
+      - "8889:8889"
+      - "13133:13133"

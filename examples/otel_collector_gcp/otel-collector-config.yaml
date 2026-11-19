@@ -1,0 +1,54 @@
+# Copyright 2026 Google. This software is provided as-is, without
+# warranty or representation for any use or purpose. Your use of it is
+# subject to your agreement with Google.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317 # OTLP gRPC (matches OTEL_COLLECTOR_URL=http://localhost:4317)
+      http:
+        endpoint: 0.0.0.0:4318 # OTLP HTTP
+
+processors:
+  batch:
+    send_batch_size: 256
+    timeout: 1s
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+# The Google Cloud exporter is configured to send traces to the Google Cloud Trace service.
+# The project ID is set via the GCP_PROJECT_ID environment variable, which is passed from the docker-compose.yaml file.
+# If we want to use Prometheus for metrics, we can add a Prometheus exporter configuration here as well.
+# For adding a Prometheus exporter, we can change the following lines and configure it accordingly.
+# Here is an example of how to add a Grafana exporter configuration:
+# exporters:
+#   # Replace googlecloud with an OTLP exporter pointing to Grafana Tempo
+#   otlp/grafana:
+#     endpoint: "<GRAFANA_TEMPO_ENDPOINT>:443"
+#     headers:
+#       authorization: "Basic <BASE64_AUTH_TOKEN>"
+#   debug:
+#     verbosity: detailed
+
+exporters:
+  googlecloud:
+    project: "${GCP_PROJECT_ID}"
+  debug:
+    verbosity: detailed
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "agentops"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [googlecloud, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, debug]

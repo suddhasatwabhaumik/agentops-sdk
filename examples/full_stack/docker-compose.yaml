@@ -1,0 +1,110 @@
+# Copyright 2026 Google. This software is provided as-is, without
+# warranty or representation for any use or purpose. Your use of it is
+# subject to your agreement with Google.
+#
+# Local observability stack for exercising every telemetry signal the AgentOps SDK emits.
+#
+#   SDK ──OTLP──► Alloy          (:4317 / :4318)  ─┬─► Prometheus (remote write)
+#   SDK ──OTLP──► OTel Collector (:14317 / :14318) ─┤   Prometheus (scrapes :8889)
+#                                                   ├─► Tempo (OTLP gRPC) ──► span metrics ──► Prometheus
+#                                                   └─► Loki  (native OTLP /otlp)
+#   Grafana (:3000) reads Prometheus, Tempo and Loki, with trace <-> log <-> metric links provisioned.
+#
+# Every image is pinned to a released tag and its multi-arch index digest.
+
+name: agentops-full-stack
+
+services:
+  alloy:
+    image: grafana/alloy:v1.20.1@sha256:2aa2099af76c0098d4af7a4d6e48f86cb66dc1a000222ad927a1c67c6542d13f
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+    volumes:
+      - ./config/alloy/config.alloy:/etc/alloy/config.alloy:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC  (SDK default: OTEL_COLLECTOR_URL=http://localhost:4317)
+      - "4318:4318"   # OTLP HTTP
+      - "12345:12345" # Alloy UI, component graph and live debugging
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./config/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "14317:4317"  # OTLP gRPC (remapped so it can run next to Alloy)
+      - "14318:4318"  # OTLP HTTP
+      - "8888:8888"   # Collector self-telemetry (Prometheus format)
+      - "8889:8889"   # SDK metrics re-exposed for Prometheus to scrape
+      - "13133:13133" # health_check extension
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: grafana/tempo:3.1.0@sha256:3076b8dcdfb32fd6bc5ccef85e7b7313e6199b9cb84366257fc17ecb696db5fd
+    command: ["-target=all", "-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./config/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP API (search, trace by ID, TraceQL)
+    depends_on:
+      - prometheus
+
+  loki:
+    image: grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./config/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"   # Loki HTTP API, including native OTLP ingestion at /otlp
+
+  prometheus:
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=2d
+      - --web.enable-remote-write-receiver   # Alloy and the Tempo metrics-generator push here
+      - --enable-feature=exemplar-storage    # span-metric exemplars link back to Tempo traces
+      - --web.enable-lifecycle
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+    environment:
+      # Local sandbox only: read-only viewer role by default.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/agentops/agentops-sdk-overview.json
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards/agentops:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+volumes:
+  tempo-data:
+  loki-data:
+  prometheus-data:

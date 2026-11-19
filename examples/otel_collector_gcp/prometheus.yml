@@ -1,0 +1,12 @@
+# Copyright 2026 Google. This software is provided as-is, without
+# warranty or representation for any use or purpose. Your use of it is
+# subject to your agreement with Google.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'agentops-otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889']

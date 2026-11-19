@@ -1,0 +1,66 @@
+# Copyright 2026 Google. This software is provided as-is, without
+# warranty or representation for any use or purpose. Your use of it is
+# subject to your agreement with Google.
+#
+# Tempo 3.x single binary (-target=all): no Kafka, local filesystem backend.
+# Based on grafana/tempo v3.1.0 example/docker-compose/single-binary.
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+# Tempo 3 hides the newest 30s from search by default so a lagging live-store never returns
+# partial results. One local instance cannot lag, so keep the window short enough for
+# run_full_stack.py to find the traces it just emitted.
+query_frontend:
+  query_end_cutoff: 5s
+
+metrics_generator:
+  registry:
+    collection_interval: 5s
+    external_labels:
+      source: tempo
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [service-graphs, span-metrics]
+      processor:
+        span_metrics:
+          # Span attributes the SDK sets, promoted to labels on traces_spanmetrics_*
+          # (dots become underscores: business.kpi_id -> business_kpi_id).
+          dimensions:
+            - business.kpi_id
+            - agentops.agent.role
+            - agentops.agent.name
+            - safety.is_safe
+            - sql.ast.is_safe
+            - tool.validation.status
+            - ingest_path
+
+usage_report:
+  reporting_enabled: false

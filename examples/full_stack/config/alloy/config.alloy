@@ -1,0 +1,101 @@
+// Copyright 2026 Google. This software is provided as-is, without
+// warranty or representation for any use or purpose. Your use of it is
+// subject to your agreement with Google.
+//
+// Ingest path "alloy": the AgentOps SDK exports OTLP here (localhost:4317).
+//   metrics -> Prometheus remote write
+//   traces  -> Tempo (OTLP gRPC)
+//   logs    -> Loki native OTLP endpoint
+//
+// Every signal is stamped with ingest_path="alloy" so run_full_stack.py can prove
+// which pipeline delivered it (the OTel Collector path stamps "otel-collector").
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+// Lets the Alloy UI (http://localhost:12345) stream the data flowing through each component.
+livedebugging {
+  enabled = true
+}
+
+otelcol.receiver.otlp "sdk" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.processor.memory_limiter.default.input]
+    logs    = [otelcol.processor.memory_limiter.default.input]
+    traces  = [otelcol.processor.memory_limiter.default.input]
+  }
+}
+
+otelcol.processor.memory_limiter "default" {
+  check_interval         = "1s"
+  limit_percentage       = 75
+  spike_limit_percentage = 20
+
+  output {
+    metrics = [otelcol.processor.attributes.ingest_path.input]
+    logs    = [otelcol.processor.attributes.ingest_path.input]
+    traces  = [otelcol.processor.attributes.ingest_path.input]
+  }
+}
+
+// Datapoint, log-record and span attribute. On metrics it becomes a Prometheus label.
+otelcol.processor.attributes "ingest_path" {
+  action {
+    key    = "ingest_path"
+    value  = "alloy"
+    action = "insert"
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+    traces  = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    metrics = [otelcol.exporter.prometheus.default.input]
+    logs    = [otelcol.exporter.otlphttp.loki.input]
+    traces  = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+// service.namespace/service.name -> job, service.instance.id -> instance.
+otelcol.exporter.prometheus "default" {
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+
+    tls {
+      insecure = true
+    }
+  }
+}
+
+// Loki 3.x ingests OTLP natively; resource attributes such as service.name become index labels,
+// log attributes become structured metadata.
+otelcol.exporter.otlphttp "loki" {
+  client {
+    endpoint = "http://loki:3100/otlp"
+  }
+}

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# TEST 4: ADK Agent Quality Gates End-to-End Integration (v1)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
+if [[ ! -f "${PYTHON_BIN}" ]]; then
+    PYTHON_BIN="python3"
+fi
+
+PROJECT_ID="${1:-${GOOGLE_CLOUD_PROJECT:-${GCP_PROJECT:-local-offline}}}"
+LOCATION="${2:-europe-west4}"
+EVAL_MODE="${3:-${EVAL_MODE:-in_memory}}"
+export PYTHONPATH="${REPO_ROOT}/sdk/src:${REPO_ROOT}:${PYTHONPATH:-}"
+
+echo "Running Test 4: ADK Agent Quality Gates (${PROJECT_ID}, mode=${EVAL_MODE})..."
+"${PYTHON_BIN}" "${SCRIPT_DIR}/run_adk_quality_gate_agent.py" \
+    --project-id "${PROJECT_ID}" \
+    --location "${LOCATION}" \
+    --eval-mode "${EVAL_MODE}" \
+    --mode "all"
+
+echo "[PASS] Test 4: ADK Agent Quality Gates E2E Integration succeeded."

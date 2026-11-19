@@ -1,0 +1,9 @@
+# Copyright 2026 Google. This software is provided as-is, without
+# warranty or representation for any use or purpose. Your use of it is
+# subject to your agreement with Google.
+
+prompt_id: finance_summary
+version: 2.0.0
+template: 'v2.0.0: Enterprise portfolio {{portfolio_id}} summary with {{risk_level}}
+  and multi-asset audit'
+metadata: {}

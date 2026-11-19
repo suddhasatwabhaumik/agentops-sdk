@@ -1,0 +1,21 @@
+# Copyright 2026 Google. This software is provided as-is, without
+# warranty or representation for any use or purpose. Your use of it is
+# subject to your agreement with Google.
+
+prompt_id: audit_explainer_prompt
+version: 1.1.0
+description: "Production prompt template for explaining audit ledger logs and execution results."
+template: |
+  Audit Log Analysis for Trace ID: {{trace_id}}
+  Execution Status: {{execution_status}}
+  Error Details: {{error_message | default('None')}}
+
+  Summarize the execution outcome, root cause (if failed), and recommended remediations.
+variables:
+  - trace_id
+  - execution_status
+  - error_message
+metadata:
+  domain: governance_audit
+  author: AgentOps
+

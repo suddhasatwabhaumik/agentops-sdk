@@ -1,0 +1,30 @@
+# Copyright 2026 Google. This software is provided as-is, without
+# warranty or representation for any use or purpose. Your use of it is
+# subject to your agreement with Google.
+
+version: "1.0.0"
+domain: "equipment_and_diagnostics"
+test_cases:
+  - id: "case_01_coolant_spec"
+    name: "Series-700 7.4L Coolant Specification"
+    prompt: "What coolant specification is required for Series-700 7.4L engines?"
+    context: "Engine Tech Spec: Series-700 7.4L engines require OAT (Organic Acid Technology) coolant meeting OEM specification SPEC-1145. Mix 50/50 with demineralized water."
+    expected_response: "Series-700 7.4L engines require OAT coolant meeting OEM specification SPEC-1145, mixed 50/50 with demineralized water."
+    groundedness_threshold: 0.85
+    relevance_threshold: 0.80
+
+  - id: "case_02_hydraulic_torque"
+    name: "Hydraulic Pump Bolt Torque"
+    prompt: "What is the recommended torque for hydraulic pump mounting bolts on Series-800 equipment?"
+    context: "Workshop Manual S800-HYD-04 (Series-800): Hydraulic pump mounting flange bolts (Grade 10.9 M12x1.75) must be torqued to 125 Nm in a diagonal cross-pattern."
+    expected_response: "The hydraulic pump mounting flange bolts for Series-800 equipment must be torqued to 125 Nm using a diagonal cross-pattern."
+    groundedness_threshold: 0.85
+    relevance_threshold: 0.80
+
+  - id: "case_03_powertrain_warranty"
+    name: "Powertrain Warranty Terms"
+    prompt: "What is the standard warranty coverage for CVT transmission components on new Series-900 equipment?"
+    context: "Equipment Warranty Policy 2026: New Series-900 equipment include 3-year or 3,000-hour standard warranty coverage on CVT transmission and powertrain components."
+    expected_response: "New Series-900 equipment include 3-year or 3,000-hour standard warranty coverage on the CVT transmission and powertrain components."
+    groundedness_threshold: 0.85
+    relevance_threshold: 0.80

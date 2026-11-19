@@ -1,0 +1,192 @@
+name: CI Tests, Build SDK Wheel & GitHub Release
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      release_notes_mode:
+        description: 'Release Notes Mode (auto: all on first run, incremental on new feature PRs)'
+        required: false
+        type: choice
+        default: 'auto'
+        options:
+          - auto
+          - all
+          - incremental
+
+permissions:
+  contents: read
+
+jobs:
+  unit-and-regression-tests:
+    name: Run SDK Unit & Regression Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install SDK and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,all]"
+
+      - name: Run Ruff Linter, Format Check & Mypy Strict
+        run: |
+          ruff check sdk/src/ mcp_servers/src/ tests/ tools/ examples/
+          ruff format --check sdk/src/ mcp_servers/src/ tests/ tools/ examples/
+          mypy --strict sdk/src/agentops_sdk mcp_servers/src
+
+      - name: Run SDK Unit & Contract Test Suite
+        run: |
+          python -m coverage run -m pytest -v tests/unit tests/contract \
+            --eval-mode=in_memory \
+            --eval-report-path=eval_quality_gate_summary.md
+          python -m coverage report -m
+
+      - name: Publish Quality Gate Summary to GitHub Step Summary
+        if: always()
+        run: |
+          if [ -f eval_quality_gate_summary.md ]; then
+            cat eval_quality_gate_summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  build-and-release:
+    name: Build Wheel & Publish GitHub Release
+    needs: unit-and-regression-tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository (Full Git History)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install packaging & processing dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build wheel packaging twine
+
+      - name: Consolidate Release Notes (Smart Auto-Detection)
+        id: release_notes
+        env:
+          MODE: ${{ inputs.release_notes_mode || 'auto' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p dist
+          echo "Executing release notes consolidation in mode: ${MODE}"
+          python -m tools.release_notes.consolidate \
+            --mode "${MODE}" \
+            --base "${BASE_SHA}" \
+            --head "${HEAD_SHA}" \
+            --releases-dir "releases" \
+            --output "dist/RELEASE_NOTES.md" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Build AgentOps SDK Wheel
+        run: |
+          echo "Building wheel from repository root..."
+          python -m build --wheel . --outdir dist/
+
+      - name: Verify Wheel Integrity & Contents
+        run: |
+          echo "=== Built Artifacts in dist/ ==="
+          ls -la dist/
+          echo "=== Wheel Internal File Tree ==="
+          python -m zipfile -l dist/*.whl
+          python -m zipfile -l dist/*.whl | grep -q "agentops_sdk/py.typed"
+          echo "=== Twine Package Metadata Validation ==="
+          twine check dist/*.whl
+
+      - name: Smoke-Test Base Wheel & [all] Extras Wheel in Isolated Virtualenvs
+        run: |
+          WHEEL_PATH=$(ls dist/*.whl | head -n 1)
+          python -m venv /tmp/wheel-base-venv
+          /tmp/wheel-base-venv/bin/pip install --upgrade pip
+          /tmp/wheel-base-venv/bin/pip install "${WHEEL_PATH}" pytest
+          /tmp/wheel-base-venv/bin/python -c "import agentops_sdk; assert hasattr(agentops_sdk, '__version__'); print('Verified base wheel version:', agentops_sdk.__version__)"
+          /tmp/wheel-base-venv/bin/pytest --help | grep -q -- "--eval-mode"
+          rm -rf /tmp/wheel-base-venv
+
+          python -m venv /tmp/wheel-all-venv
+          /tmp/wheel-all-venv/bin/pip install --upgrade pip
+          /tmp/wheel-all-venv/bin/pip install "${WHEEL_PATH}[all]" pytest
+          /tmp/wheel-all-venv/bin/python -c "import agentops_sdk, httpx, mcp, pandas, sqlalchemy, ragas, datasets; print('Verified [all] extras wheel imports')"
+          rm -rf /tmp/wheel-all-venv
+
+      - name: Generate Cryptographic SHA-256 Checksums
+        run: |
+          cd dist
+          sha256sum *.whl RELEASE_NOTES*.md > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload Workflow Artifacts (Wheel & Release Notes)
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentops-sdk-release-${{ github.sha }}
+          path: |
+            dist/*.whl
+            dist/RELEASE_NOTES*.md
+            dist/SHA256SUMS
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish to GitHub Releases
+        if: github.event_name != 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RAW_VERSION: ${{ steps.release_notes.outputs.release_version }}
+          RAW_TITLE: ${{ steps.release_notes.outputs.release_title }}
+          RESOLVED_MODE: ${{ steps.release_notes.outputs.resolved_mode }}
+          SHOULD_PUBLISH: ${{ steps.release_notes.outputs.should_publish_release }}
+        run: |
+          VERSION="${RAW_VERSION}"
+          if [ -z "$VERSION" ]; then
+            VERSION="v$(python -c "import re; print(re.search(r'^__version__\s*=\s*[\"\x27]([^\"\x27]+)[\"\x27]', open('sdk/src/agentops_sdk/__init__.py', encoding='utf-8').read(), re.M).group(1))")"
+          fi
+          if ! echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([A-Za-z0-9._-]*)?$'; then
+            echo "Error: Invalid release version format: $VERSION" >&2
+            exit 1
+          fi
+          TITLE="${RAW_TITLE}"
+          if [ -z "$TITLE" ]; then
+            TITLE="AgentOps SDK ${VERSION}"
+          fi
+
+          echo "Target Release: ${VERSION} - ${TITLE} (mode=${RESOLVED_MODE}, should_publish=${SHOULD_PUBLISH})"
+
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            if [ "${RESOLVED_MODE}" = "latest" ] && [ "${SHOULD_PUBLISH}" = "false" ]; then
+              echo "Release ${VERSION} already exists and no new release notes were added in this commit. Skipping release overwrite."
+              exit 0
+            fi
+            echo "Release ${VERSION} already exists. Updating release notes and assets..."
+            gh release edit "${VERSION}" \
+              --title "${TITLE}" \
+              --notes-file "dist/RELEASE_NOTES.md"
+            gh release upload "${VERSION}" dist/*.whl dist/RELEASE_NOTES*.md dist/SHA256SUMS --clobber
+          else
+            echo "Creating new GitHub Release: ${VERSION}..."
+            gh release create "${VERSION}" dist/*.whl dist/RELEASE_NOTES*.md dist/SHA256SUMS \
+              --title "${TITLE}" \
+              --notes-file "dist/RELEASE_NOTES.md" \
+              --latest
+          fi

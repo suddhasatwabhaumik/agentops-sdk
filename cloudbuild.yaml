@@ -1,0 +1,62 @@
+# Copyright 2026 Google. This software is provided as-is, without
+# warranty or representation for any use or purpose. Your use of it is
+# subject to your agreement with Google.
+
+steps:
+  # Step 1: Install dependencies, lint, format check, and strict mypy
+  - name: 'python:3.11-slim'
+    id: 'Install & Lint'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        python -m pip install --upgrade pip
+        pip install --no-cache-dir -e ".[dev,all]"
+        ruff check sdk/src/ mcp_servers/src/ tests/ tools/ examples/
+        ruff format --check sdk/src/ mcp_servers/src/ tests/ tools/ examples/
+        mypy --strict sdk/src/agentops_sdk mcp_servers/src
+
+  # Step 2: Policy checking using pinned static Open Policy Agent (OPA) binary
+  # Add args: ['test', 'policies/', '-v'] when Terraform Rego policies/ are added.
+  - name: 'openpolicyagent/opa:0.70.0-static'
+    id: 'OPA Tag Enforcement Check'
+    args:
+      - 'version'
+
+  # Step 3: Run unit & contract tests (in-memory evaluation mode)
+  - name: 'python:3.11-slim'
+    id: 'Run Quality & Unit Tests'
+    entrypoint: 'bash'
+    env:
+      - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
+    args:
+      - '-c'
+      - |
+        pip install --no-cache-dir -e ".[dev,all]"
+        pytest -v tests/unit tests/contract --eval-mode=in_memory
+
+  # Step 4: Build and Publish SDK to GCP Artifact Registry only on tagged releases
+  - name: 'python:3.11-slim'
+    id: 'Publish SDK'
+    entrypoint: 'bash'
+    env:
+      - 'CB_TAG_NAME=$TAG_NAME'
+    args:
+      - '-c'
+      - |
+        pip install --no-cache-dir --upgrade pip build twine keyrings.google-artifactregistry-auth
+        python3 -m build .
+        python3 -m twine check dist/*
+        if [ -n "$_TAG_NAME" ] || [ -n "${CB_TAG_NAME:-}" ]; then
+          python3 -m twine upload --repository-url "https://${_GCP_REGION}-python.pkg.dev/${PROJECT_ID}/${_AR_REPOSITORY}/" dist/*
+        else
+          echo "Skipping twine upload: no release tag (_TAG_NAME / TAG_NAME) specified."
+        fi
+
+substitutions:
+  _GCP_REGION: 'europe-west4'
+  _AR_REPOSITORY: 'agentops-python-repo'
+  _TAG_NAME: ''
+
+options:
+  logging: CLOUD_LOGGING_ONLY
