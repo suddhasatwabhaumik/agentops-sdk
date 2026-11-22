@@ -293,3 +293,126 @@ def test_simulate_agent_conversations_stops_on_done() -> None:
     assert trajs[0].completed is True and trajs[0].turns_count == 2
     with pytest.raises(TypeError):
         simulate_agent_conversations(scenarios, "not-callable")
+
+
+def test_gemini_38_flash_defaults_and_env_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENTOPS_EVAL_AUTORATER_MODEL", raising=False)
+    monkeypatch.delenv("AGENTOPS_EVAL_JUDGE_MODEL", raising=False)
+    assert VertexAIEvalConfig().judge_model == "gemini-3.8-flash"
+    assert VertexAIEvalConfig().judge_location == "global"
+    assert UserSimulatorConfig().model_name == "gemini-3.8-flash"
+
+    monkeypatch.setenv("AGENTOPS_EVAL_JUDGE_MODEL", "gemini-judge-fallback")
+    assert VertexAIEvalConfig().judge_model == "gemini-judge-fallback"
+
+    monkeypatch.setenv("AGENTOPS_EVAL_AUTORATER_MODEL", "gemini-autorater-top")
+    assert VertexAIEvalConfig().judge_model == "gemini-autorater-top"
+
+
+def test_preview_eval_task_autorater_and_trajectory_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agentops_sdk.evaluation import vertex_task
+
+    monkeypatch.setattr(vertex_task.aiplatform, "init", lambda **_kw: None)
+    monkeypatch.setattr(vertex_task.vertexai, "init", lambda **_kw: None)
+    captured: list[dict[str, Any]] = []
+
+    class _FakePreviewEvalTask:
+        __module__ = "vertexai.preview.evaluation.eval_task"
+
+        def __init__(self, **kw: Any) -> None:
+            captured.append(kw)
+
+        def evaluate(self, **_kw: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                summary_metrics={"groundedness/mean": 1.0},
+                metrics_table=pd.DataFrame(
+                    {
+                        "groundedness/score": [1.0],
+                        "groundedness/explanation": ["ok"],
+                    }
+                ),
+            )
+
+    preview_mod = vertex_task._get_lazy_module("preview_evaluation")
+    monkeypatch.setattr(preview_mod, "EvalTask", _FakePreviewEvalTask)
+
+    cfg = VertexAIEvalConfig(
+        project_id="test-proj",
+        location="europe-west4",
+        judge_location="global",
+        judge_model="gemini-3.8-flash",
+    )
+    scores = VertexEvalTaskAdapter(cfg).evaluate(
+        [{"prompt": "p", "context": "c", "response": "c"}],
+        metrics=["groundedness"],
+    )
+    assert scores == {"groundedness": 1.0}
+    ar_cfg = captured[0]["autorater_config"]
+    assert ar_cfg.autorater_model == (
+        "projects/test-proj/locations/global/"
+        "publishers/google/models/gemini-3.8-flash"
+    )
+
+    class _FakePreviewTrajTask(_FakePreviewEvalTask):
+        def evaluate(self, **_kw: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                summary_metrics={"trajectory_single_tool_use/mean": 1.0},
+                metrics_table=pd.DataFrame(
+                    {"trajectory_single_tool_use/score": [1.0]}
+                ),
+            )
+
+    monkeypatch.setattr(preview_mod, "EvalTask", _FakePreviewTrajTask)
+    traj_cfg = VertexAIEvalConfig(
+        project_id="test-proj",
+        location="europe-west4",
+        judge_model="",
+    )
+    traj_scores = VertexEvalTaskAdapter(traj_cfg).evaluate(
+        [
+            {
+                "prompt": "p",
+                "response": "r",
+                "predicted_trajectory": [{"tool_name": "lookup_tool"}],
+            }
+        ],
+        metrics=["trajectory_single_tool_use:lookup_tool"],
+    )
+    assert traj_scores == {"trajectory_single_tool_use": 1.0}
+    assert "autorater_config" not in captured[1]
+
+
+def test_vertex_eval_backend_failure_records_fallback_metric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agentops_sdk.domain import exceptions
+    from agentops_sdk.evaluation import vertex_task
+    from agentops_sdk.telemetry import provider
+
+    monkeypatch.setattr(vertex_task.aiplatform, "init", lambda **_kw: None)
+    monkeypatch.setattr(vertex_task.vertexai, "init", lambda **_kw: None)
+    recorded: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        provider,
+        "record_fallback_metric",
+        lambda component, reason: recorded.append((component, reason)),
+    )
+
+    class _FailingTask:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+        def evaluate(self, **_kw: Any) -> Any:
+            raise RuntimeError("backend unavailable")
+
+    cfg = VertexAIEvalConfig(project_id="test-proj", location="europe-west4")
+    with pytest.raises(exceptions.EvaluationError, match="Vertex eval failed"):
+        VertexEvalTaskAdapter(cfg, eval_task_factory=_FailingTask).evaluate(
+            [{"prompt": "p", "context": "c", "response": "r"}],
+            metrics=["groundedness"],
+        )
+    assert recorded == [("evaluation", "vertex_eval_error")]

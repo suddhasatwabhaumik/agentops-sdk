@@ -31,19 +31,22 @@ python examples/full_stack/run_full_stack.py --target both
 
 # Keep traffic flowing for 10 minutes so the dashboards have continuous data
 python examples/full_stack/run_full_stack.py --loop 600
+
+# Run hermetic mode with zero Docker or collector required (validates SDK assertions locally)
+MODE=hermetic python examples/full_stack/run_full_stack.py --hermetic
 ```
 
-`--iterations N` sets the number of scenario rounds (default `3`), `--no-validate` emits without validating, `--verbose` prints SDK logs, and `--timeout` sets how long the validator waits for data to arrive (default `90` s). The exit code is non-zero if any check fails, so the script can gate CI.
+`--iterations N` sets the number of scenario rounds (default `3`), `--hermetic` (or `MODE=hermetic`) runs locally with `configure_telemetry(mode="off")` and skips collector/backend polling, `--no-validate` emits without validating, `--verbose` prints SDK logs, and `--timeout` sets how long the validator waits for data to arrive (default `90` s). The exit code is non-zero if any check fails, so the script can gate CI.
 
 Stop and discard all volumes with `docker compose down -v`.
 
 ## What the script exercises
 
-Each round runs six requests through a dealer parts advisor built with SDK decorators, plus a rate-limit burst and a prompt lookup exercising adapter fallback via `PromptRegistry(adapter=..., fallback_adapter=...)`:
+Each round runs six requests through an enterprise parts advisor built with SDK decorators, plus a rate-limit burst and a prompt lookup exercising adapter fallback via `PromptRegistry(adapter=..., fallback_adapter=...)`:
 
 | Scenario | SDK surface exercised | Signal |
 |---|---|---|
-| Answered, first tool attempt returns bad data | `configure_telemetry(mode="otlp")`, `bind_execution_scope`, `@trace_agent_flow`, `@trace_agent_span`, `@validate_tool_output` retry, `@rate_limit`, `apply_row_level_policy`, `@validate_sql_query_decorator`, `PromptRegistry.render_prompt`, `@trace_llm_call`, `log_llm_metrics`, `OutputDLPSanitizer`, `evaluate_agent_response`, `InMemorySessionMemory`, `AuditLedger(sink=InMemoryAuditAdapter())`, `CompositeTelemetryExporter` | spans, span events, metrics, FinOps log |
+| Answered, first tool attempt returns bad data | `configure_telemetry(mode="otlp")`, `bind_execution_scope`, `@trace_agent_flow`, `@trace_agent_span`, `@validate_tool_output` retry, `@rate_limit`, `apply_row_level_policy`, `@validate_sql_query_decorator`, `PromptRegistry.render_prompt`, `@trace_llm_call`, `log_llm_metrics`, `OutputDLPSanitizer`, `evaluate_agent_response`, `VertexEvalTaskAdapter` (`gemini-3.8-flash` `raw_scores`/`explanations`/`console_url`), `CompositeMemory` (`memory_type="preference"` filtering + consolidation), `AuditLedger(sink=InMemoryAuditAdapter())`, `CompositeTelemetryExporter` | spans, span events, metrics, FinOps log |
 | Answered, response contains email and phone | `OutputDLPSanitizer(scrubber=RegexPrivacyScrubber())` (`agentops.privacy.pii_scrubbed=true`) | span attributes |
 | Prompt injection | `SecurityGuard(scanner=LocalRuleSafetyScanner(), fail_closed=True)` | span (`safety.is_safe=false`) |
 | LLM-generated SQL reads `finance.credit_limits` | `@validate_sql_query_decorator` allowlist | error span (`sql.ast.is_safe=false`) |
@@ -104,7 +107,6 @@ OTLP to Prometheus metric translation:
 
 Pinned stack images: Alloy v1.20.1, OTel Collector contrib 0.161.0, Tempo 3.1.0, Loki 3.7.8, Prometheus v3.15.0, Grafana 13.2.3.
 
-- **Collector contrib 0.161** uses `otlp_grpc` / `otlp_http` exporter names (replacing `otlp` / `otlphttp` used by [`../otel_collector_gcp`](../otel_collector_gcp)).
+- **Collector contrib 0.161** uses `otlp_grpc` / `otlp_http` exporter names.
 - **Alloy** appends `_total` to its OTel self-metrics whereas the OTel Collector does not (`otelcol_receiver_accepted_spans_total` vs `otelcol_receiver_accepted_spans`).
 - **Tempo 3** runs single-binary `-target=all` with `query_frontend.query_end_cutoff` lowered to `5s`.
-- **Port Collisions**: Shares ports `4317`, `9090`, and `3000` with [`../otel_collector_gcp`](../otel_collector_gcp) — stop one stack before starting the other.

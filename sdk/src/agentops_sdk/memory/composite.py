@@ -14,28 +14,11 @@ from typing_extensions import override
 
 from agentops_sdk.domain import exceptions
 from agentops_sdk.domain import models
+from agentops_sdk.memory import _bank_codec as codec
 from agentops_sdk.ports import memory as memory_ports
 
 logger = logging.getLogger(__name__)
 _TURN_CAP = 200
-
-
-def _ctx(
-    sid: str,
-    uid: str,
-    turns: list[models.ConversationTurn],
-    memories: list[models.MemoryItem],
-) -> dict[str, Any]:
-    return {
-        "session_id": sid,
-        "user_id": uid,
-        "turns": turns,
-        "memories": memories,
-        "short_term_history": [
-            {"role": t.role, "content": t.content} for t in turns
-        ],
-        "long_term_memories": [m.model_dump() for m in memories],
-    }
 
 
 class CompositeMemory(
@@ -48,6 +31,7 @@ class CompositeMemory(
         session_memory: memory_ports.SessionMemoryPort,
         long_term_memory: memory_ports.LongTermMemoryPort,
     ) -> None:
+        """Initializes the composite memory coordinator."""
         if not isinstance(session_memory, memory_ports.SessionMemoryPort):
             raise TypeError("session_memory must satisfy SessionMemoryPort.")
         if not isinstance(long_term_memory, memory_ports.LongTermMemoryPort):
@@ -77,8 +61,7 @@ class CompositeMemory(
     def __enter__(self) -> CompositeMemory:
         return self
 
-    def __exit__(self, exc_t: Any, exc_v: Any, tb: Any) -> None:
-        del exc_t, exc_v, tb
+    def __exit__(self, *_: Any) -> None:
         self.close()
 
     def get_context(
@@ -102,7 +85,7 @@ class CompositeMemory(
                 raise
             logger.warning("Recall degraded: %s", type(exc).__name__)
             memories = []
-        return _ctx(session_id, user_id, turns, memories)
+        return codec.build_context(session_id, user_id, turns, memories)
 
     async def _safe_aretrieve(
         self, uid: str, query: str | None, limit: int, strict: bool
@@ -132,7 +115,7 @@ class CompositeMemory(
             self._session.aget_messages(session_id, limit=turn_limit),
             self._safe_aretrieve(user_id, query, memory_limit, strict),
         )
-        return _ctx(session_id, user_id, turns, memories)
+        return codec.build_context(session_id, user_id, turns, memories)
 
     def consolidate_session(
         self, session_id: str, user_id: str, *, clear_after: bool = False
@@ -194,9 +177,8 @@ class CompositeMemory(
         content: str,
         metadata: Mapping[str, Any] | None = None,
     ) -> models.ConversationTurn:
-        return await self._session.aadd_message(
-            session_id, role, content, metadata
-        )
+        fn = self._session.aadd_message
+        return await fn(session_id, role, content, metadata)
 
     @override
     async def aget_messages(
@@ -240,10 +222,16 @@ class CompositeMemory(
 
     @override
     def retrieve_memories(
-        self, *, user_id: str, query: str | None = None, limit: int = 5
+        self,
+        *,
+        user_id: str,
+        query: str | None = None,
+        limit: int = 5,
+        memory_type: str | None = None,
     ) -> list[models.MemoryItem]:
-        return self._long_term.retrieve_memories(
-            user_id=user_id, query=query, limit=limit
+        fn = self._long_term.retrieve_memories
+        return fn(
+            user_id=user_id, query=query, limit=limit, memory_type=memory_type
         )
 
     @override
@@ -276,10 +264,16 @@ class CompositeMemory(
 
     @override
     async def aretrieve_memories(
-        self, *, user_id: str, query: str | None = None, limit: int = 5
+        self,
+        *,
+        user_id: str,
+        query: str | None = None,
+        limit: int = 5,
+        memory_type: str | None = None,
     ) -> list[models.MemoryItem]:
-        return await self._long_term.aretrieve_memories(
-            user_id=user_id, query=query, limit=limit
+        fn = self._long_term.aretrieve_memories
+        return await fn(
+            user_id=user_id, query=query, limit=limit, memory_type=memory_type
         )
 
     @override

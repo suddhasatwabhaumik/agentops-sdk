@@ -94,7 +94,7 @@ If a request is rejected (either immediately when `wait_timeout_seconds=0.0` or 
 *   `exc.retry_after_seconds`: Computed wait duration before the next token/slot opens
 *   `exc.status_code`: `429`
 
-### Developer Usage Example (`examples/demo_developer_rate_limiting.py`)
+### Developer Usage Example (see `examples/full_stack/`)
 
 ```python
 from agentops_sdk.domain.context import bind_execution_scope
@@ -171,8 +171,8 @@ Metric attributes are kept low-cardinality (never attaching raw `tenant_id` to m
 # Run resilience unit tests (rate limiters, loop isolation, claim scoping, tool validator)
 pytest -v tests/unit/test_resilience.py --eval-mode=in_memory
 
-# Run the offline developer demonstration
-python examples/demo_developer_rate_limiting.py
+# Run the full-stack hermetic demonstration (includes rate-limiting burst)
+MODE=hermetic python examples/full_stack/run_full_stack.py --hermetic
 ```
 
 ### Automated E2E Shell Suite (`tests/e2e_async_rate_limiting/`)

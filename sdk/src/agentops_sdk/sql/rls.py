@@ -5,16 +5,17 @@
 
 from __future__ import annotations
 
-import collections
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import sqlglot
 from sqlglot import errors as sqlglot_errors
 from sqlglot import exp
+from sqlglot.dialects import dialect as sql_dialect
 from sqlglot.optimizer import scope as sql_scope
 
 from agentops_sdk.domain import exceptions
+from agentops_sdk.sql import _ast_rules
 from agentops_sdk.sql import _rls_helpers
 from agentops_sdk.sql import ast_guard
 
@@ -22,93 +23,159 @@ _ADMIN_ROLES = frozenset({"admin", "superadmin"})
 _DEFAULT_POLICY_COLUMNS: Mapping[str, str] = {"tenant_id": "tenant_id"}
 
 
-def _direct_physical_tables(
-    select_node: exp.Select,
-    cte_names: set[str],
+def _classify_scope_tables(
+    sc: sql_scope.Scope,
+    candidates: Sequence[exp.Table],
+    dialect_obj: sql_dialect.Dialect,
     target_tables: Sequence[str] | None,
-) -> list[tuple[exp.Table, str | None]]:
-    """Collects physical base tables in FROM and JOINs of a single SELECT."""
-    candidates: list[tuple[exp.Table, str | None]] = []
-    from_clause = select_node.args.get("from_")
-    if from_clause is not None:
-        tbl, alias = _rls_helpers.unwrap_table_node(from_clause.this)
-        if tbl is not None:
-            candidates.append((tbl, alias))
-    for join_node in select_node.args.get("joins") or ():
-        tbl, alias = _rls_helpers.unwrap_table_node(join_node.this)
-        if tbl is not None:
-            candidates.append((tbl, alias))
-    restricted: list[tuple[exp.Table, str | None]] = []
-    for tbl, alias in candidates:
+) -> tuple[list[exp.Table], list[exp.Table], set[int]]:
+    """Classifies scope candidates into physical tables, TVFs, and CTE refs."""
+    cte_names = _ast_rules.visible_cte_names(sc, dialect_obj)
+    physical: list[exp.Table] = []
+    tvfs: list[exp.Table] = []
+    cte_refs: set[int] = set()
+    for tbl in candidates:
+        if _ast_rules.is_predict_model_table(tbl):
+            continue
+        if isinstance(tbl.this, (exp.Func, exp.Anonymous)):
+            tvfs.append(tbl)
+            continue
         if not isinstance(tbl.this, exp.Identifier) or not tbl.name:
             continue
-        if not tbl.catalog and not tbl.db and tbl.name.lower() in cte_names:
+        if isinstance(tbl.parent, exp.Predict):
+            continue
+        all_ctes = cte_names | _ast_rules.enclosing_cte_names(tbl, dialect_obj)
+        norm = _ast_rules.resolve_identifier_name(tbl.this, dialect_obj)
+        if not tbl.catalog and not tbl.db and norm in all_ctes:
+            cte_refs.add(id(tbl))
             continue
         if _rls_helpers.matches_target_tables(tbl, target_tables):
-            restricted.append((tbl, alias))
-    return restricted
+            physical.append(tbl)
+    return physical, tvfs, cte_refs
 
 
-def _build_qualified_column(
-    tbl: exp.Table,
-    outer_alias: str | None,
-    col_name: str,
-    name_counts: Mapping[str, int],
-) -> exp.Column:
-    short = outer_alias or tbl.alias_or_name
-    if (
-        name_counts.get(short.lower(), 0) > 1
-        and not outer_alias
-        and not tbl.alias
-        and (tbl.db or tbl.catalog)
-    ):
-        return exp.column(
-            col_name,
-            table=tbl.name,
-            db=tbl.db or None,
-            catalog=tbl.catalog or None,
-        )
-    return exp.column(col_name, table=short)
+def _find_joined_tvf(select_node: exp.Select) -> exp.Expr | None:
+    """Returns any joined table-valued function expression in a SELECT."""
+    for join_node in select_node.args.get("joins") or ():
+        target = ast_guard.unwrap_relation_target(join_node.this)
+        if isinstance(target, exp.Table) and isinstance(
+            target.this, (exp.Func, exp.Anonymous)
+        ):
+            return target.this
+        if isinstance(target, (exp.Func, exp.Anonymous)) and not isinstance(
+            target, exp.Unnest
+        ):
+            return target
+    return None
 
 
-def _attach_table_predicates(
-    select_node: exp.Select,
-    tables: Sequence[tuple[exp.Table, str | None]],
+def _build_sole_function_predicate(
+    tvf_tbl: exp.Table,
     col_filters: Sequence[tuple[str, Any]],
-) -> None:
-    """Attaches parenthesized alias-qualified WHERE predicates to SELECT."""
-    name_counts = collections.Counter(
-        (alias or tbl.alias_or_name).lower() for tbl, alias in tables
-    )
+    target_tables: Sequence[str] | None,
+    filtered: set[int],
+) -> list[exp.Condition]:
+    """Builds outer output predicates for sole-FROM ML.PREDICT queries."""
+    if not isinstance(tvf_tbl.this, exp.Predict):
+        return []
+    targets_protected = False
+    for inner in tvf_tbl.this.find_all(exp.Table):
+        if _ast_rules.is_predict_model_table(inner):
+            continue
+        if not isinstance(inner.this, exp.Identifier) or not inner.name:
+            continue
+        if _rls_helpers.matches_target_tables(inner, target_tables):
+            targets_protected = True
+            if inner.parent is tvf_tbl.this:
+                filtered.add(id(inner))
+    if not targets_protected:
+        return []
+    alias_ident = _rls_helpers.resolve_alias_identifier(tvf_tbl)
     preds: list[exp.Condition] = []
-    for tbl, outer_alias in tables:
-        for col_name, literal_or_list in col_filters:
-            col_expr = _build_qualified_column(
-                tbl, outer_alias, col_name, name_counts
-            )
-            if isinstance(literal_or_list, list):
-                cond: exp.Condition = exp.In(
-                    this=col_expr,
-                    expressions=[x.copy() for x in literal_or_list],
-                )
-            else:
-                cond = exp.EQ(this=col_expr, expression=literal_or_list.copy())
-            preds.append(exp.Paren(this=cond))
-    if not preds:
-        return
-    combined: exp.Condition = preds[0]
-    for extra in preds[1:]:
-        combined = exp.and_(combined, extra, wrap=False)
-    where_node = select_node.args.get("where")
-    if where_node is not None and where_node.this is not None:
-        existing: exp.Expression = where_node.this
-        if not isinstance(existing, exp.Paren):
-            existing = exp.Paren(this=existing)
-        select_node.set(
-            "where", exp.Where(this=exp.and_(existing, combined, wrap=False))
+    for col_name, literal_or_list in col_filters:
+        col_expr = exp.Column(
+            this=exp.to_identifier(col_name), table=alias_ident
         )
-    else:
-        select_node.set("where", exp.Where(this=combined))
+        preds.append(
+            _rls_helpers.build_column_predicate(col_expr, literal_or_list)
+        )
+    return preds
+
+
+def _attach_physical_predicates(
+    tbl: exp.Table,
+    col_filters: Sequence[tuple[str, Any]],
+    name_counts: Mapping[str, int],
+    where_preds: list[exp.Condition],
+    filtered: set[int],
+) -> None:
+    _rls_helpers.validate_rls_relation_modifiers(tbl)
+    left_join = _rls_helpers.find_enclosing_left_join(tbl)
+    for col_name, literal_or_list in col_filters:
+        col_expr = _rls_helpers.build_qualified_column(
+            tbl, col_name, name_counts
+        )
+        pred = _rls_helpers.build_column_predicate(col_expr, literal_or_list)
+        if left_join is not None:
+            _rls_helpers.attach_left_join_predicate(left_join, pred)
+        else:
+            where_preds.append(pred)
+    filtered.add(id(tbl))
+
+
+def _apply_select_scope(
+    sc: sql_scope.Scope,
+    dialect_obj: sql_dialect.Dialect,
+    col_filters: Sequence[tuple[str, Any]],
+    target_tables: Sequence[str] | None,
+    filtered: set[int],
+    cte_references: set[int],
+) -> None:
+    """Applies RLS predicates to a single SELECT scope."""
+    select_node = sc.expression
+    if not isinstance(select_node, exp.Select):
+        return
+    if _find_joined_tvf(select_node) is not None:
+        raise exceptions.SQLGovernanceError(
+            "Joined table-valued functions are forbidden under RLS."
+        )
+    candidates = _rls_helpers.collect_scope_candidates(sc)
+    name_counts = _rls_helpers.count_scope_short_names(sc, candidates)
+    physical, tvfs, cte_refs = _classify_scope_tables(
+        sc, candidates, dialect_obj, target_tables
+    )
+    cte_references.update(cte_refs)
+    where_preds: list[exp.Condition] = []
+    for tvf_tbl in tvfs:
+        where_preds.extend(
+            _build_sole_function_predicate(
+                tvf_tbl, col_filters, target_tables, filtered
+            )
+        )
+    for tbl in physical:
+        _attach_physical_predicates(
+            tbl, col_filters, name_counts, where_preds, filtered
+        )
+    _rls_helpers.attach_where_predicates(select_node, where_preds)
+
+
+def _verify_all_tables_covered(
+    tree: exp.Expr,
+    target_tables: Sequence[str] | None,
+    covered_ids: set[int],
+) -> None:
+    """Fails closed if any target physical table escaped RLS filtering."""
+    for tbl in tree.find_all(exp.Table):
+        if not isinstance(tbl.this, exp.Identifier) or not tbl.name:
+            continue
+        if _ast_rules.is_predict_model_table(tbl):
+            continue
+        if id(tbl) in covered_ids:
+            continue
+        if _rls_helpers.matches_target_tables(tbl, target_tables):
+            raise exceptions.SQLGovernanceError(
+                f"RLS policy failed to cover table {tbl.name!r}."
+            )
 
 
 def _rewrite_ast_selects(
@@ -117,23 +184,21 @@ def _rewrite_ast_selects(
     col_filters: Sequence[tuple[str, Any]],
     target_tables: Sequence[str] | None,
 ) -> str:
+    targets = _rls_helpers.validate_target_tables(target_tables)
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
     except sqlglot_errors.SqlglotError as exc:
         raise exceptions.SQLGovernanceError(
             f"Failed to parse SQL for RLS rewriting: {exc}"
         ) from exc
-    root_scope = sql_scope.build_scope(tree)
-    scope_map = (
-        {id(sc.expression): sc for sc in root_scope.traverse()}
-        if root_scope is not None
-        else {}
-    )
-    for sel in tree.find_all(exp.Select):
-        sc = scope_map.get(id(sel))
-        ctes = {k.lower() for k in sc.cte_sources} if sc is not None else set()
-        phys = _direct_physical_tables(sel, ctes, target_tables)
-        _attach_table_predicates(sel, phys, col_filters)
+    dialect_obj = sql_dialect.Dialect.get_or_raise(dialect)
+    filtered: set[int] = set()
+    cte_references: set[int] = set()
+    for sc in sql_scope.traverse_scope(tree):
+        _apply_select_scope(
+            sc, dialect_obj, col_filters, targets, filtered, cte_references
+        )
+    _verify_all_tables_covered(tree, targets, filtered | cte_references)
     return tree.sql(dialect=dialect, comments=False)
 
 
@@ -153,9 +218,7 @@ class RowLevelPolicyEngine:
             if policy_columns is not None
             else dict(_DEFAULT_POLICY_COLUMNS)
         )
-        self._target_tables = (
-            tuple(target_tables) if target_tables is not None else None
-        )
+        self._target_tables = _rls_helpers.validate_target_tables(target_tables)
 
     def apply(
         self,
@@ -173,6 +236,11 @@ class RowLevelPolicyEngine:
             raise exceptions.SQLGovernanceError(
                 validation.violation_reason or "Unsafe SQL rejected before RLS."
             )
+        targets = (
+            _rls_helpers.validate_target_tables(target_tables)
+            if target_tables is not None
+            else self._target_tables
+        )
         role = str((claims or {}).get("role", "")).strip().lower()
         if role in _ADMIN_ROLES:
             return validation.sanitized_sql
@@ -180,9 +248,6 @@ class RowLevelPolicyEngine:
             policy_columns
             if policy_columns is not None
             else self._policy_columns
-        )
-        targets = (
-            target_tables if target_tables is not None else self._target_tables
         )
         filters = _rls_helpers.resolve_column_filters(claims, cols)
         return _rewrite_ast_selects(

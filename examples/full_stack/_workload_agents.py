@@ -18,9 +18,9 @@ from _workload_models import FLOW_NAME
 from _workload_models import KPI_ID
 from _workload_models import PL_LINE
 from _workload_models import PROJECT_NAME
-from _workload_models import Dealer
 from _workload_models import Scenario
 from _workload_models import StockReport
+from _workload_models import Tenant
 from _workload_models import WorkloadContext
 from opentelemetry import trace
 
@@ -52,21 +52,21 @@ def query_parts_inventory(sql: str) -> list[dict[str, Any]]:
 
 
 @rate_limit(
-    rule_id="dealer-stock-tool",
+    rule_id="tenant-stock-tool",
     rate=600,
     period_seconds=60.0,
     max_concurrency=8,
     limiter=TOOL_LIMITER,
 )
 @validate_tool_output(schema_model=StockReport, max_retries=3)
-async def fetch_dealer_stock(
+async def fetch_tenant_stock(
     *,
-    dealer_id: str,
+    tenant_id: str,
     rows: list[dict[str, Any]],
     behaviour: str,
     attempts: list[int],
 ) -> dict[str, Any]:
-    """Simulate a flaky dealer stock API triggering tool-output retries."""
+    """Simulate a flaky tenant stock API triggering tool-output retries."""
     attempts.append(1)
     await asyncio.sleep(0.02)
     invalid = behaviour == "invalid" or (
@@ -74,7 +74,7 @@ async def fetch_dealer_stock(
     )
     units = -1 if invalid else rows[0]["units_available"]
     return {
-        "dealer_id": dealer_id,
+        "tenant_id": tenant_id,
         "part_number": rows[0]["part_number"],
         "units_available": units,
     }
@@ -96,19 +96,19 @@ async def sync_price_list() -> int:
 
 @trace_agent_span(agent_name="inventory_agent")
 async def inventory_agent(
-    dealer: Dealer, sql: str, tool_output: str, ledger: RunLedger
+    tenant: Tenant, sql: str, tool_output: str, ledger: RunLedger
 ) -> dict[str, Any]:
     """Run RLS rewrite, SQL AST guard, and schema-validated stock lookup."""
     secured_sql = apply_row_level_policy(
         sql,
-        {"region": dealer.region},
+        {"region": tenant.region},
         policy_columns={"region": "region"},
     )
     trace.get_current_span().set_attribute("db.query.text", secured_sql)
     rows = query_parts_inventory(sql=secured_sql)
     ledger.rate_limit_checks += 1
-    return await fetch_dealer_stock(
-        dealer_id=dealer.dealer_id,
+    return await fetch_tenant_stock(
+        tenant_id=tenant.tenant_id,
         rows=rows,
         behaviour=tool_output,
         attempts=[],
@@ -170,7 +170,7 @@ async def answer_agent(
 def record_quality_eval(
     question: str, stock: dict[str, Any], safe_text: str, ctx: WorkloadContext
 ) -> None:
-    """Run InMemoryEvaluator and emit structured eval telemetry."""
+    """Run InMemoryEvaluator + VertexEvalTaskAdapter and emit eval telemetry."""
     payload = [
         {
             "prompt": question,
@@ -181,17 +181,31 @@ def record_quality_eval(
     res = evaluate_agent_response(
         payload, evaluator=ctx.evaluator, record_report=False
     )
+    suite = ctx.vertex_evaluator.evaluate_suite(
+        payload, experiment_run_name=f"{ctx.ledger.run_id}-eval"
+    )
+    if not suite.raw_summary_scores or not suite.console_url:
+        raise RuntimeError("VertexEvalTaskAdapter missing raw_scores or URL")
+    if not any(
+        m.explanation for inst in suite.instances for m in inst.metrics.values()
+    ):
+        raise RuntimeError("VertexEvalTaskAdapter missing explanations")
+    ctx.ledger.vertex_eval_runs += 1
+
     grounded = res.scores.get("groundedness", 0.0)
     relevance = res.scores.get("question_answering_relevance", 0.0)
     span = trace.get_current_span()
     span.set_attribute("eval.groundedness_score", grounded)
     span.set_attribute("eval.relevance_score", relevance)
     span.set_attribute("eval.is_passing", res.is_passing)
+    span.set_attribute("eval.vertex.console_url", suite.console_url)
     eval_fields = {
         "groundedness": grounded,
         "relevance": relevance,
         "is_passing": res.is_passing,
-        "evaluator": "in_memory",
+        "evaluator": "in_memory+vertex_task",
+        "raw_scores": dict(suite.raw_summary_scores),
+        "console_url": suite.console_url,
     }
     logger.info(
         "Quality eval | grounded=%.2f rel=%.2f pass=%s",
@@ -210,7 +224,7 @@ def record_quality_eval(
 async def write_audit(
     ctx: WorkloadContext,
     trace_id: str,
-    dealer: Dealer,
+    tenant: Tenant,
     question: str,
     status: str,
     started: float,
@@ -222,7 +236,7 @@ async def write_audit(
         AuditLogEntry(
             trace_id=trace_id,
             session_id=ctx.ledger.run_id,
-            user_id=dealer.username,
+            user_id=tenant.username,
             agent_name=FLOW_NAME,
             input_query=question,
             generated_sql=sql,

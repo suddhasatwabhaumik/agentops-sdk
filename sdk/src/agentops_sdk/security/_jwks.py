@@ -5,22 +5,119 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import ipaddress
 import json
 import os
+import re
 import socket
 from typing import Any
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
+from cryptography import exceptions as crypto_exc
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
 from typing_extensions import override
 
 from agentops_sdk.domain import exceptions
 
 _CGNAT_NETWORK = ipaddress.IPv4Network("100.64.0.0/10")
+_TENANT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_MULTI_TENANT_ALIASES = frozenset({"common", "organizations", "consumers"})
+_PEM_HEADERS = (
+    "-----BEGIN PUBLIC KEY-----",
+    "-----BEGIN RSA PUBLIC KEY-----",
+)
+
+
+def clean_opt(value: str | None, field_name: str) -> str | None:
+    """Validates and strips an optional string, rejecting blank values."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise exceptions.ConfigurationError(
+            f"{field_name} must be a non-empty string when provided."
+        )
+    return value.strip()
+
+
+def first_env(*env_keys: str) -> str | None:
+    """Returns the first non-empty stripped environment variable value."""
+    for key in env_keys:
+        val = os.getenv(key, "").strip()
+        if val:
+            return val
+    return None
+
+
+def parse_rsa_public_pem(pem_text: str) -> Any:
+    """Parses and validates an RSA public key from PEM text."""
+    if not isinstance(pem_text, str):
+        raise exceptions.ConfigurationError("Invalid RSA public_key PEM.")
+    cleaned = pem_text.replace("\\n", "\n").strip()
+    if not cleaned.startswith(_PEM_HEADERS):
+        raise exceptions.ConfigurationError("Invalid RSA public_key PEM.")
+    try:
+        key = serialization.load_pem_public_key(cleaned.encode("utf-8"))
+    except (ValueError, TypeError, crypto_exc.UnsupportedAlgorithm) as exc:
+        raise exceptions.ConfigurationError(
+            "Invalid RSA public_key PEM."
+        ) from exc
+    if not isinstance(key, rsa.RSAPublicKey):
+        raise exceptions.ConfigurationError("Invalid RSA public_key PEM.")
+    return key
+
+
+def build_entra_issuer(tenant_id: str) -> str:
+    """Builds a single-tenant Microsoft Entra ID v2.0 issuer URL."""
+    cleaned = tenant_id.strip() if isinstance(tenant_id, str) else ""
+    if (
+        not cleaned
+        or cleaned in {".", ".."}
+        or cleaned.lower() in _MULTI_TENANT_ALIASES
+        or not _TENANT_ID_RE.match(cleaned)
+    ):
+        raise exceptions.ConfigurationError(
+            "Invalid Entra tenant_id for issuer."
+        )
+    return f"https://login.microsoftonline.com/{cleaned}/v2.0"
+
+
+def build_decode_options(
+    algs: tuple[str, ...], audience: str | None, issuer: str | None
+) -> Any:
+    """Builds PyJWT decode options with fail-closed RS256 claim rules."""
+    if algs == ("RS256",):
+        return {
+            "require": ["exp", "aud", "iss"],
+            "verify_exp": True,
+            "verify_aud": True,
+            "verify_iss": True,
+        }
+    req = ["exp"] + (["aud"] if audience else [])
+    if issuer:
+        req.append("iss")
+    return {"require": req, "verify_exp": True}
+
+
+def verify_token_type(
+    decoded: Mapping[str, Any], expected: str, algs: tuple[str, ...]
+) -> None:
+    """Enforces OIDC-compatible token type checks for RS256 and HS256."""
+    token_type = decoded.get("type")
+    if algs == ("RS256",) and expected == "access":
+        if token_type is not None and token_type != expected:
+            raise exceptions.AuthenticationError(
+                f"Invalid token type: expected {expected!r}."
+            )
+        return
+    if token_type != expected:
+        raise exceptions.AuthenticationError(
+            f"Invalid token type: expected {expected!r}."
+        )
 
 
 def _is_disallowed_ip(
@@ -62,14 +159,14 @@ def _ensure_public_ip(raw_ip: str, host: str) -> None:
 def _resolve_allowed_hosts(
     allowed: Sequence[str] | None,
 ) -> set[str] | None:
-    env_hosts = os.getenv("AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS", "").strip()
-    raw_list = (
-        allowed
-        if allowed is not None
-        else (env_hosts.split(",") if env_hosts else None)
-    )
+    raw_list: Sequence[str] | None = allowed
     if raw_list is None:
-        return None
+        env_hosts = os.getenv(
+            "AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS", ""
+        ).strip()
+        if not env_hosts:
+            return None
+        raw_list = env_hosts.split(",")
     return {
         item.strip().lower().rstrip(".") for item in raw_list if item.strip()
     }

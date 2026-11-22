@@ -171,3 +171,123 @@ def test_reporting_markdown_sanitization_and_stats() -> None:
         thresholds={"m": 0.8},
     )
     assert suite.all_passed is True
+
+
+def test_quality_gate_with_vertex_adapter_explanations_and_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+    from typing import Any
+
+    from agentops_sdk.evaluation import VertexAIEvalConfig
+    from agentops_sdk.evaluation import VertexEvalTaskAdapter
+    from agentops_sdk.evaluation import vertex_task
+
+    monkeypatch.setattr(vertex_task.aiplatform, "init", lambda **_kw: None)
+    monkeypatch.setattr(vertex_task.vertexai, "init", lambda **_kw: None)
+
+    class _Task:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+        def evaluate(self, **_kw: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                summary_metrics={"accuracy/mean": 3.0},
+                metrics_table=pd.DataFrame(
+                    {
+                        "accuracy/score": [4.0, 3.0, 2.0],
+                        "accuracy/explanation": [
+                            float("nan"),
+                            "   ",
+                            "Missing citation on Series-700",
+                        ],
+                    }
+                ),
+            )
+
+    rows = [
+        {"prompt": "p1", "context": "c1", "response": "r1"},
+        {"prompt": "p2", "context": "c2", "response": "r2"},
+        {"prompt": "p3", "context": "c3", "response": "r3"},
+    ]
+    cfg_no_exp = VertexAIEvalConfig(
+        project_id="test-proj",
+        location="europe-west4",
+        metrics=["accuracy"],
+        experiment=None,
+    )
+    adapter_no_exp = VertexEvalTaskAdapter(cfg_no_exp, eval_task_factory=_Task)
+    suite = adapter_no_exp.evaluate_suite(rows, thresholds={"accuracy": 0.8})
+    assert suite.instances[0].metrics["accuracy"].explanation is None
+    assert suite.instances[1].metrics["accuracy"].explanation is None
+    assert (
+        suite.instances[2].metrics["accuracy"].explanation
+        == "Missing citation on Series-700"
+    )
+
+    res_no_exp = evaluate_agent_response(
+        rows,
+        thresholds={"accuracy": 0.5},
+        metrics=["accuracy"],
+        evaluator=adapter_no_exp,
+        record_report=False,
+    )
+    assert res_no_exp.raw_scores == {"accuracy": 3.0}
+    assert res_no_exp.scores == {"accuracy": 0.6}
+    assert res_no_exp.explanations == {
+        "accuracy": "Missing citation on Series-700"
+    }
+    assert res_no_exp.console_url == ""
+
+    cfg_exp = cfg_no_exp.model_copy(update={"experiment": "exp-gate"})
+    adapter_exp = VertexEvalTaskAdapter(cfg_exp, eval_task_factory=_Task)
+    rep = QualityGateSessionReporter()
+    with (
+        use_session_reporter(rep),
+        pytest.raises(exceptions.QualityGateError) as err,
+    ):
+        assert_quality_gate(
+            rows,
+            thresholds={"accuracy": 0.9},
+            metrics=["accuracy"],
+            evaluator=adapter_exp,
+            test_name="vertex_gate_fail",
+        )
+    md = rep.generate_markdown()
+    assert "Missing citation on Series-700" in md
+    assert "Missing citation on Series-700" in err.value.report_markdown
+    assert "console.cloud.google.com" in md
+
+
+def test_quality_gate_propagates_evaluation_error_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from typing import Any
+
+    from agentops_sdk.evaluation import VertexAIEvalConfig
+    from agentops_sdk.evaluation import VertexEvalTaskAdapter
+    from agentops_sdk.evaluation import vertex_task
+
+    monkeypatch.setattr(vertex_task.aiplatform, "init", lambda **_kw: None)
+    monkeypatch.setattr(vertex_task.vertexai, "init", lambda **_kw: None)
+
+    class _BrokenTask:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+        def evaluate(self, **_kw: Any) -> Any:
+            raise RuntimeError("vertex rpc failure")
+
+    cfg = VertexAIEvalConfig(
+        project_id="test-proj",
+        location="europe-west4",
+        metrics=["groundedness"],
+    )
+    adapter = VertexEvalTaskAdapter(cfg, eval_task_factory=_BrokenTask)
+    with pytest.raises(exceptions.EvaluationError, match="Vertex eval failed"):
+        assert_quality_gate(
+            [{"prompt": "p", "context": "c", "response": "r"}],
+            thresholds={"groundedness": 0.5},
+            metrics=["groundedness"],
+            evaluator=adapter,
+        )

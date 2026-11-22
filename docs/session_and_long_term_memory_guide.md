@@ -146,7 +146,7 @@ page_1 = await memory.aget_messages(session_id="sess-1", limit=10, offset=0)
 | :--- | :--- | :--- | :--- |
 | `create_memory(fact, *, user_id, memory_type="fact", metadata=None, ttl_seconds=None)` | Sync | `MemoryItem` | Persists a durable fact under `user_id`. |
 | `acreate_memory(...)` | Async | `MemoryItem` | Non-blocking memory creation. |
-| `retrieve_memories(*, user_id, query=None, limit=5)` | Sync | `list[MemoryItem]` | Simple list recall or semantic vector similarity search (`query`). |
+| `retrieve_memories(*, user_id, query=None, memory_type=None, limit=5)` | Sync | `list[MemoryItem]` | Simple list recall or semantic vector similarity search (`query`), with optional `memory_type` filtering. |
 | `aretrieve_memories(...)` | Async | `list[MemoryItem]` | Non-blocking recall. |
 | `purge_memories(*, user_id)` / `apurge_memories(*, user_id)` | Sync/Async | `int` | Deletes all memories for `user_id` and returns purge count. |
 
@@ -156,7 +156,7 @@ page_1 = await memory.aget_messages(session_id="sess-1", limit=10, offset=0)
 1. **Flexible Resource Naming**: Accepts either a bare engine ID (`"1234567890"`) or a full resource name (`"projects/{project}/locations/{location}/reasoningEngines/{id}"`).
 2. **Canonical Scope (`scope={"user_id": uid}`)**: Writes and reads both use `scope={"user_id": user_id}` consistently so memories saved with `memory_type` or custom metadata are always discoverable.
 3. **Metadata & TTL Config**: Encodes `memory_type` and custom key-value `metadata` into typed `metadata` entries and optional `ttl=f"{ttl_seconds}s"` inside `AgentEngineMemoryConfig`.
-4. **Native Semantic Similarity Search**: When `query` is provided, sends `similarity_search_params={"search_query": query, "top_k": limit}` (vs `simple_retrieval_params={"page_size": limit}` when omitted).
+4. **Native Semantic Similarity Search & Bounded `memory_type` Over-Fetch**: When `query` is provided, sends `similarity_search_params={"search_query": query, "top_k": fetch_limit}` (vs `simple_retrieval_params={"page_size": fetch_limit}` when omitted). When `memory_type` is specified, performs a bounded single-RPC over-fetch (`min(max(limit * 4, 20), 100)`) and filters client-side before slicing to `limit`.
 5. **User ID Validation & Fail-Loud Errors**: Enforces `validate_user_id()` (`ValueError` on null/blank/`/`/`..`/control chars) and wraps API failures cleanly in `MemoryBankError`.
 6. **Explicit Offline Testing**: Use `InMemoryLongTermMemory()` directly in unit tests instead of environment switches.
 

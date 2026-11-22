@@ -207,16 +207,16 @@ Every `SecurityGuard.check_input()` and `SecurityGuard.check_output()` call emit
 
 ## 6. Verification & Automated Test Suites
 
-### Standalone Demo
+### Full-Stack & Tutorial Demos
 ```bash
-# Offline deterministic demo using LocalRuleSafetyScanner
-python examples/demo_model_armor/demo_model_armor_safety.py --mode offline
+# Offline hermetic full-stack demo (includes LocalRuleSafetyScanner)
+MODE=hermetic python examples/full_stack/run_full_stack.py --hermetic
 
-# Live GCP Cloud Model Armor demo
+# Live GCP Cloud Model Armor tutorial
 GOOGLE_CLOUD_PROJECT=<your-gcp-project-id> \
 MODEL_ARMOR_INPUT_TEMPLATE=agentops-input-guard \
 MODEL_ARMOR_OUTPUT_TEMPLATE=agentops-output-guard \
-python examples/demo_model_armor/demo_model_armor_safety.py --mode gcp
+python examples/tutorial/09_safety_model_armor/main.py
 ```
 
 ### Unit & Contract Tests

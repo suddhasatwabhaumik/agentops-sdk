@@ -11,6 +11,7 @@ from typing import Any
 import sqlglot
 from sqlglot import errors as sqlglot_errors
 from sqlglot import exp
+from sqlglot.dialects import dialect as sql_dialect
 from sqlglot.optimizer import scope as sql_scope
 
 from agentops_sdk.domain import models
@@ -20,35 +21,8 @@ normalize_table_parts = _ast_rules.normalize_table_parts
 is_table_in_allowlist = _ast_rules.is_table_in_allowlist
 
 
-def collect_physical_tables(root: exp.Expr) -> list[exp.Table]:
-    """Collects physical base tables across scopes, excluding CTE aliases."""
-    root_scope = sql_scope.build_scope(root)
-    if root_scope is None:
-        return [
-            t
-            for t in root.find_all(exp.Table)
-            if isinstance(t.this, exp.Identifier) and t.name
-        ]
-    tables: list[exp.Table] = []
-    seen_ids: set[int] = set()
-    for sc in root_scope.traverse():
-        cte_names = {name.lower() for name in sc.cte_sources}
-        candidates = list(sc.tables)
-        if isinstance(sc.expression, exp.Table):
-            candidates.append(sc.expression)
-        for tbl in candidates:
-            if id(tbl) in seen_ids:
-                continue
-            if not isinstance(tbl.this, exp.Identifier) or not tbl.name:
-                continue
-            if not tbl.catalog and not tbl.db and tbl.name.lower() in cte_names:
-                continue
-            seen_ids.add(id(tbl))
-            tables.append(tbl)
-    return tables
-
-
-def _unwrap_relation_target(expr: exp.Expr | None) -> exp.Expr | None:
+def unwrap_relation_target(expr: exp.Expr | None) -> exp.Expr | None:
+    """Unwraps Subquery/Paren/TableSample wrappers around a relation."""
     cur = expr
     while isinstance(cur, (exp.Subquery, exp.Paren, exp.TableSample)):
         if isinstance(cur, exp.Subquery) and isinstance(cur.this, exp.Query):
@@ -57,17 +31,104 @@ def _unwrap_relation_target(expr: exp.Expr | None) -> exp.Expr | None:
     return cur
 
 
+_unwrap_relation_target = unwrap_relation_target
+
+
+def _add_physical_table(
+    tbl: exp.Table,
+    cte_names: set[str],
+    dialect_obj: sql_dialect.Dialect,
+    seen_ids: set[int],
+    tables: list[exp.Table],
+) -> None:
+    if id(tbl) in seen_ids:
+        return
+    if not isinstance(tbl.this, exp.Identifier) or not tbl.name:
+        return
+    if _ast_rules.is_predict_model_table(tbl):
+        return
+    is_unqualified = not tbl.catalog and not tbl.db
+    norm_name = _ast_rules.resolve_identifier_name(tbl.this, dialect_obj)
+    if is_unqualified and norm_name in cte_names:
+        return
+    seen_ids.add(id(tbl))
+    tables.append(tbl)
+
+
+def collect_physical_tables(
+    root: exp.Expr, dialect: str = "bigquery"
+) -> list[exp.Table]:
+    """Collects physical base tables across scopes, excluding CTEs/models."""
+    dialect_obj = sql_dialect.Dialect.get_or_raise(dialect)
+    tables: list[exp.Table] = []
+    seen_ids: set[int] = set()
+    for sc in sql_scope.traverse_scope(root):
+        cte_names = _ast_rules.visible_cte_names(sc, dialect_obj)
+        candidates = list(sc.tables)
+        if isinstance(sc.expression, exp.Table):
+            candidates.append(sc.expression)
+        for tbl in candidates:
+            all_ctes = cte_names | _ast_rules.enclosing_cte_names(
+                tbl, dialect_obj
+            )
+            _add_physical_table(tbl, all_ctes, dialect_obj, seen_ids, tables)
+    for tbl in root.find_all(exp.Table):
+        all_ctes = _ast_rules.enclosing_cte_names(tbl, dialect_obj)
+        _add_physical_table(tbl, all_ctes, dialect_obj, seen_ids, tables)
+    return tables
+
+
+def _tvf_display_name(expr: exp.Expr) -> str:
+    if isinstance(expr, exp.Anonymous) and expr.name:
+        return expr.name
+    if isinstance(expr, exp.Func):
+        return expr.sql_name() or type(expr).__name__
+    return type(expr).__name__
+
+
+def _is_sole_from_predict(from_node: exp.From) -> bool:
+    parent = from_node.parent
+    if not isinstance(parent, exp.Select):
+        return False
+    if parent.args.get("joins") or parent.args.get("laterals"):
+        return False
+    target = unwrap_relation_target(from_node.this)
+    return isinstance(target, exp.Table) and isinstance(
+        target.this, exp.Predict
+    )
+
+
+def _is_allowed_from_predict(node: exp.Table) -> bool:
+    if not isinstance(node.this, exp.Predict):
+        return False
+    prev: exp.Expr = node
+    cur: exp.Expr | None = node.parent
+    while (
+        isinstance(cur, (exp.Subquery, exp.Paren, exp.TableSample))
+        and cur.this is prev
+    ):
+        prev = cur
+        cur = cur.parent
+    return isinstance(cur, exp.From) and _is_sole_from_predict(cur)
+
+
 def _check_table_valued_function(node: exp.Expr) -> str | None:
     if isinstance(node, exp.Table) and isinstance(
         node.this, (exp.Func, exp.Anonymous)
     ):
-        return f"Forbidden table-valued function: {node.this.sql_name()}."
+        if _is_allowed_from_predict(node):
+            return None
+        name = _tvf_display_name(node.this)
+        return f"Forbidden table-valued function: {name}."
     if isinstance(node, (exp.From, exp.Join)):
-        target = _unwrap_relation_target(node.this)
+        if isinstance(node, exp.From) and _is_sole_from_predict(node):
+            return None
+        target = unwrap_relation_target(node.this)
         if isinstance(target, (exp.Func, exp.Anonymous)) and not isinstance(
             target, exp.Unnest
         ):
-            return f"Forbidden table-valued function: {target.sql_name()}."
+            name = _tvf_display_name(target)
+            return f"Forbidden table-valued function: {name}."
     return None
 
 
@@ -192,7 +253,7 @@ class SQLASTValidator:
         if node_err is not None:
             return models.SQLValidationResult(False, "", node_err)
         tbl_err, refs = _check_tables(
-            collect_physical_tables(root), active_allow
+            collect_physical_tables(root, dialect=active_dialect), active_allow
         )
         if tbl_err is not None:
             return models.SQLValidationResult(False, "", tbl_err, refs)

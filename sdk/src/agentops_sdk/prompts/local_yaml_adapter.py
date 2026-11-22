@@ -122,6 +122,7 @@ class LocalYAMLPromptAdapter:
     """Thread-safe local YAML prompt adapter with symlink containment."""
 
     def __init__(self, local_dir: str = "prompts") -> None:
+        """Initializes LocalYAMLPromptAdapter rooted at local_dir."""
         if not local_dir or not local_dir.strip():
             raise ValueError("local_dir must be a non-empty path.")
         self._local_dir = local_dir

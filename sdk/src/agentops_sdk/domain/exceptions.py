@@ -65,6 +65,7 @@ class QualityGateError(EvaluationError):
         failed_metrics: Mapping[str, tuple[float, float]] | None = None,
         report_markdown: str = "",
     ) -> None:
+        """Initializes QualityGateError with failed metrics and report."""
         super().__init__(message)
         self.failed_metrics = dict(failed_metrics or {})
         self.report_markdown = report_markdown
@@ -81,6 +82,7 @@ class RateLimitExceededError(AgentOpsError):
         retry_after_seconds: float = 1.0,
         status_code: int = 429,
     ) -> None:
+        """Initializes RateLimitExceededError with quota key and retry delay."""
         super().__init__(message)
         self.key = key
         self.retry_after_seconds = retry_after_seconds
@@ -98,6 +100,7 @@ class ToolValidationError(AgentOpsError):
         attempts: int,
         last_error: BaseException | str,
     ) -> None:
+        """Initializes ToolValidationError with tool name and attempt info."""
         super().__init__(message)
         self.tool_name = tool_name
         self.attempts = attempts

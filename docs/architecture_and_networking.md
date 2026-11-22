@@ -6,36 +6,47 @@ subject to your agreement with Google.
 
 # System Architecture & Networking (`v1.0.0`)
 
-This document outlines the high-level system architecture, the MCP governance gateway and upstream connector topology, Feature Store serving flow, and GCP networking configurations supporting the AgentOps Governance Framework.
+This document outlines the high-level system architecture, the MCP governance gateway and upstream analytical API topology, Feature Store serving flow, and GCP networking configurations supporting the AgentOps Governance Framework.
 
 ---
 
 ## 1. System Architecture Diagram
 
-The following diagram illustrates how the AgentOps components interact to govern, secure, trace, query, and evaluate agents in the Google Customer GCP ecosystem:
+The following diagram illustrates how the AgentOps components interact to govern, secure, trace, query, and evaluate agents in the Google Cloud ecosystem:
 
 ![System Architecture](arch_overall_v1.png)
 
+```mermaid
+flowchart LR
+    Agent["Agent Runtime (ADK / Vertex AI Agent Engine)"] --> SDK["agentops_sdk v1.0.0 (Hexagonal Core)"]
+    SDK --> Sec["Security & SQL Guard (Model Armor, Cloud DLP, JWT RS256/HS256, sqlglot AST/RLS)"]
+    SDK --> Mem["Memory & Prompts (Cloud SQL, Vertex Memory Bank, PromptRegistry)"]
+    SDK --> Eval["Vertex Eval (gemini-3.8-flash, AutoraterConfig, Quality Gates)"]
+    SDK --> Obs["Unified OTLP / GCP Observability (Cloud Trace, Logging, Tempo/Prometheus/Loki)"]
+    Agent --> MCP["FastMCP Governance Gateway (HeaderBindingMiddleware + AST/RLS)"]
+    MCP --> BQ["BigQuery / Feature Online Store / Upstream SQL API"]
+```
+
 ---
 
-## 2. MCP Governance Gateway & Upstream Connector Flow
+## 2. MCP Governance Gateway & Upstream Query Flow
 
 To keep downstream AI agents free from warehouse-specific drivers (such as Databricks SQL or SAP HANA connector binaries) and prevent LLM-level credential tampering, data tool calls route through the **MCP Governance Gateway** ([`mcp_servers/src/server.py`](../mcp_servers/src/server.py)):
 
 ### Query Lifecycle
 1.  **Caller Identity Binding**: The client sends `Authorization: Bearer <JWT>` over HTTP (`sse` / `streamable-http`), captured by ASGI `HeaderBindingMiddleware` ([`mcp_servers/src/_http.py`](../mcp_servers/src/_http.py)), or binds an `ExecutionScope` token in-process (`bind_execution_scope(identity_token=...)`). Tool schemas intentionally expose zero `auth_token` parameters.
 2.  **Pre-Oracle Auth, SQL AST & RLS (`auth_guard.py`)**: `JWTAuthEngine` verifies the JWT signature and claims *before* `SQLASTValidator` (`agentops_sdk.sql`) checks read-only `SELECT` syntax and `MCP_ALLOWED_TABLES`, and `RowLevelPolicyEngine` injects parenthesized tenant predicates.
-3.  **Upstream HTTPS Dispatch (`${CONNECTOR_API_URL}/v1/query`)**: Validated payloads are posted over HTTPS (enforced for all non-loopback `CONNECTOR_API_URL` targets unless `ALLOW_INSECURE_CONNECTOR_HTTP=true`) to the upstream data connector endpoint, which executes queries using service credentials loaded via GCP Secret Manager (`SecretManagerStore`).
+3.  **Upstream HTTPS Dispatch (`${CONNECTOR_API_URL}/v1/query`)**: Validated payloads are posted over HTTPS (enforced for all non-loopback `CONNECTOR_API_URL` targets unless `ALLOW_INSECURE_CONNECTOR_HTTP=true`) to the upstream analytical SQL endpoint, which executes queries using service credentials loaded via GCP Secret Manager (`SecretManagerStore`).
 
 ---
 
 ## 3. BigQuery / BigLake to Vertex AI Feature Store Sync
 
-Google Customer synchronizes analytical feature tables from BigQuery and BigLake Native Delta external tables into **Vertex AI Feature Online Store (v2)** (`europe-west4`) using `agentops_sdk.feature_store` and `tools/feature_store_migration/`:
+Workloads synchronize analytical feature tables from BigQuery and BigLake Native Delta external tables into **Vertex AI Feature Online Store (v2)** (`europe-west4`) using `agentops_sdk.feature_store` and `tools/feature_store_migration/`:
 
 *   **Control Plane (`FeatureStoreAdminClient`)**: Provisions Bigtable-backed or Optimized `FeatureOnlineStore` instances, registers BigQuery-linked `FeatureView` resources (`bq://project.dataset.table`), triggers syncs, and manages in-engine cron schedules.
 *   **Data Plane (`FeatureStoreOnlineClient`)**: Serves low-latency (`<10ms`) online feature lookups over gRPC with cached dedicated serving endpoint discovery and strict Protobuf `WhichOneof("value")` extraction.
-*   **See Also**: [Vertex AI Feature Store Sync Guide](vertex_ai_feature_store_sync.md) and [Databricks to BigQuery Native Delta Architecture](databricks_bigquery_connector_architecture.md).
+*   **See Also**: [Vertex AI Feature Store Sync Guide](vertex_ai_feature_store_sync.md).
 
 ---
 

@@ -120,11 +120,12 @@ def _chunk_utf8_text(
             end -= 1
         nl_idx = encoded.rfind(b"\n", start, end)
         sp_idx = encoded.rfind(b" ", start, end)
-        split_at = (
-            nl_idx + 1
-            if nl_idx > start
-            else (sp_idx + 1 if sp_idx > start else end)
-        )
+        if nl_idx > start:
+            split_at = nl_idx + 1
+        elif sp_idx > start:
+            split_at = sp_idx + 1
+        else:
+            split_at = end
         chunks.append(encoded[start:split_at].decode("utf-8"))
         start = split_at
     return chunks
@@ -143,6 +144,7 @@ class GoogleDLPScrubber:
         info_types: Sequence[str] | None = None,
         client: Any | None = None,
     ) -> None:
+        """Initializes the regional Google Cloud DLP scrubber."""
         proj, loc = settings.resolve_gcp_project_and_location(
             project_id, location, require_project=True
         )
@@ -242,6 +244,7 @@ class OutputDLPSanitizer:
         project_id: str | None = None,
         location: str | None = None,
     ) -> None:
+        """Initializes the outbound DLP sanitizer with a scrubber port."""
         self._scrubber: ports.security.PrivacyScrubberPort = (
             scrubber
             if scrubber is not None

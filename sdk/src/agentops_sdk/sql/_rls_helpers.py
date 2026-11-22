@@ -1,23 +1,27 @@
 # Copyright 2026 Google. This software is provided as-is, without
 # warranty or representation for any use or purpose. Your use of it is
 # subject to your agreement with Google.
-"""RLS claim literal conversion and target table matching helpers."""
+"""RLS claim literal conversion, target matching, and AST predicate helpers."""
 
 from __future__ import annotations
 
+import collections
 from collections.abc import Mapping, Sequence
 import re
 from typing import Any
 
 from sqlglot import exp
+from sqlglot.optimizer import scope as sql_scope
 
 from agentops_sdk.domain import exceptions
+from agentops_sdk.sql import _ast_rules
 from agentops_sdk.sql import ast_guard
 
 _COL_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_WRAPPER_TYPES = (exp.Subquery, exp.Paren, exp.TableSample)
 
 
-def literal_for_scalar(value: Any) -> exp.Expression:
+def literal_for_scalar(value: Any) -> exp.Expr:
     """Converts a validated scalar tenant claim into a safe SQL AST literal."""
     if isinstance(value, bool) or value is None:
         raise exceptions.SQLGovernanceError(
@@ -75,6 +79,24 @@ def resolve_column_filters(
     return resolved
 
 
+def validate_target_tables(
+    target_tables: Sequence[str] | None,
+) -> tuple[str, ...] | None:
+    """Validates non-None target_tables and fails closed when empty."""
+    if target_tables is None:
+        return None
+    cleaned = tuple(
+        t.strip()
+        for t in target_tables
+        if isinstance(t, str) and _ast_rules.split_identifier_segments(t)
+    )
+    if not cleaned:
+        raise exceptions.SQLGovernanceError(
+            "RLS target_tables must not be empty when provided."
+        )
+    return cleaned
+
+
 def matches_target_tables(
     tbl: exp.Table,
     target_tables: Sequence[str] | None,
@@ -87,13 +109,11 @@ def matches_target_tables(
         return False
     if ast_guard.is_table_in_allowlist(parts, target_tables):
         return True
+    if any(_ast_rules.matches_rls_pattern(parts, pat) for pat in target_tables):
+        return True
     base_name = parts[-1]
     for pat in target_tables:
-        segs = [
-            s.strip("`\"'[] ").lower()
-            for s in pat.strip().split(".")
-            if s.strip("`\"'[] ")
-        ]
+        segs = _ast_rules.split_identifier_segments(pat)
         if not segs or "*" in segs:
             continue
         if len(parts) == 1 and segs[-1] == base_name:
@@ -103,27 +123,172 @@ def matches_target_tables(
     return False
 
 
-def unwrap_table_node(
-    expr: exp.Expr | None,
-) -> tuple[exp.Table | None, str | None]:
-    """Unwraps Subquery/TableSample/Paren wrappers around a physical Table."""
-    outer_alias: str | None = None
-    cur = expr
-    while cur is not None:
-        if isinstance(cur, exp.Table):
-            return cur, outer_alias
-        if isinstance(cur, exp.Subquery):
-            if isinstance(cur.this, exp.Query):
-                return None, None
-            if not outer_alias and cur.alias:
-                outer_alias = cur.alias
-            cur = cur.this
-            continue
-        if isinstance(cur, (exp.TableSample, exp.Paren)):
-            raw_alias = getattr(cur, "alias", "")
-            if not outer_alias and raw_alias:
-                outer_alias = str(raw_alias)
-            cur = cur.this
-            continue
-        return None, None
-    return None, None
+def validate_rls_relation_modifiers(tbl: exp.Table) -> None:
+    """Rejects PIVOT/UNPIVOT and column-list aliases on RLS targets."""
+    cur: exp.Expr | None = tbl
+    while isinstance(cur, (exp.Table, exp.Join, *_WRAPPER_TYPES)):
+        if cur.args.get("pivots"):
+            raise exceptions.SQLGovernanceError(
+                "PIVOT/UNPIVOT on RLS-protected tables is not supported."
+            )
+        alias = cur.args.get("alias")
+        if isinstance(alias, exp.TableAlias) and alias.args.get("columns"):
+            raise exceptions.SQLGovernanceError(
+                "Column-list aliases on RLS-protected tables are forbidden."
+            )
+        cur = cur.parent
+
+
+def _alias_ident(node: exp.Expr) -> exp.Identifier | None:
+    alias = node.args.get("alias")
+    if isinstance(alias, exp.TableAlias) and isinstance(
+        alias.this, exp.Identifier
+    ):
+        return alias.this.copy()
+    return None
+
+
+def resolve_alias_identifier(tbl: exp.Table) -> exp.Identifier | None:
+    """Resolves outer wrapper or direct table alias Identifier."""
+    outer: exp.Identifier | None = None
+    prev: exp.Expr = tbl
+    cur = tbl.parent
+    while isinstance(cur, _WRAPPER_TYPES) and cur.this is prev:
+        if ident := _alias_ident(cur):
+            outer = ident
+        prev = cur
+        cur = cur.parent
+    return outer or _alias_ident(tbl)
+
+
+def _select_relation_nodes(select_node: exp.Select) -> list[exp.Expr | None]:
+    nodes: list[exp.Expr | None] = []
+    if (from_clause := select_node.args.get("from_")) is not None:
+        nodes.append(from_clause.this)
+    for join_node in select_node.args.get("joins") or ():
+        nodes.append(join_node.this)
+    return nodes
+
+
+def collect_scope_candidates(sc: sql_scope.Scope) -> list[exp.Table]:
+    """Collects scope tables plus parenthesized FROM/JOIN table targets."""
+    candidates = list(sc.tables)
+    seen_ids = {id(t) for t in candidates}
+    if not isinstance(sc.expression, exp.Select):
+        return candidates
+    for node in _select_relation_nodes(sc.expression):
+        target = ast_guard.unwrap_relation_target(node)
+        if isinstance(target, exp.Table) and id(target) not in seen_ids:
+            seen_ids.add(id(target))
+            candidates.append(target)
+    return candidates
+
+
+def count_scope_short_names(
+    sc: sql_scope.Scope, candidates: Sequence[exp.Table]
+) -> collections.Counter[str]:
+    """Counts short relation names in scope for qualifier disambiguation."""
+    counts: collections.Counter[str] = collections.Counter()
+    for tbl in candidates:
+        alias_ident = resolve_alias_identifier(tbl)
+        short = alias_ident.name if alias_ident is not None else tbl.name
+        if short:
+            counts[short.lower()] += 1
+    if isinstance(sc.expression, exp.Select):
+        for node in _select_relation_nodes(sc.expression):
+            target = ast_guard.unwrap_relation_target(node)
+            if isinstance(target, exp.Subquery) and target.alias:
+                counts[target.alias.lower()] += 1
+    return counts
+
+
+def build_qualified_column(
+    tbl: exp.Table,
+    col_name: str,
+    name_counts: Mapping[str, int],
+) -> exp.Column:
+    """Builds a qualified Column AST node, preserving quoted identifiers."""
+    alias_ident = resolve_alias_identifier(tbl)
+    if alias_ident is not None:
+        return exp.Column(this=exp.to_identifier(col_name), table=alias_ident)
+    short = tbl.name
+    table_ident = (
+        tbl.this.copy()
+        if isinstance(tbl.this, exp.Identifier)
+        else exp.to_identifier(short)
+    )
+    if name_counts.get(short.lower(), 0) > 1 and (tbl.db or tbl.catalog):
+        db_n, cat_n = tbl.args.get("db"), tbl.args.get("catalog")
+        return exp.Column(
+            this=exp.to_identifier(col_name),
+            table=table_ident,
+            db=db_n.copy() if isinstance(db_n, exp.Identifier) else None,
+            catalog=cat_n.copy() if isinstance(cat_n, exp.Identifier) else None,
+        )
+    return exp.Column(this=exp.to_identifier(col_name), table=table_ident)
+
+
+def find_enclosing_left_join(tbl: exp.Table) -> exp.Join | None:
+    """Returns enclosing LEFT JOIN without USING/NATURAL on right side."""
+    prev: exp.Expr = tbl
+    cur = tbl.parent
+    while isinstance(cur, _WRAPPER_TYPES) and cur.this is prev:
+        prev = cur
+        cur = cur.parent
+    if (
+        not isinstance(cur, exp.Join)
+        or cur.this is not prev
+        or str(cur.side or "").upper() != "LEFT"
+        or cur.args.get("using")
+        or str(cur.args.get("method") or "").upper() == "NATURAL"
+    ):
+        return None
+    return cur
+
+
+def _merge_and(
+    existing: exp.Expr | None, extra: exp.Condition
+) -> exp.Condition:
+    if not isinstance(existing, exp.Expr):
+        return extra
+    wrapped = (
+        existing
+        if isinstance(existing, exp.Paren)
+        else exp.Paren(this=existing)
+    )
+    return exp.and_(wrapped, extra, wrap=False, copy=False)
+
+
+def attach_left_join_predicate(
+    join_node: exp.Join, predicate: exp.Condition
+) -> None:
+    """Merges an RLS predicate into a LEFT JOIN's ON clause."""
+    join_node.set("on", _merge_and(join_node.args.get("on"), predicate))
+
+
+def build_column_predicate(
+    col_expr: exp.Column, literal_or_list: Any
+) -> exp.Condition:
+    """Builds a parenthesized equality or IN predicate for a column."""
+    if isinstance(literal_or_list, list):
+        cond: exp.Condition = exp.In(
+            this=col_expr,
+            expressions=[x.copy() for x in literal_or_list],
+        )
+    else:
+        cond = exp.EQ(this=col_expr, expression=literal_or_list.copy())
+    return exp.Paren(this=cond)
+
+
+def attach_where_predicates(
+    select_node: exp.Select, preds: Sequence[exp.Condition]
+) -> None:
+    """ANDs predicates onto a SELECT's WHERE clause, wrapping existing."""
+    if not preds:
+        return
+    combined: exp.Condition = preds[0]
+    for extra in preds[1:]:
+        combined = exp.and_(combined, extra, wrap=False, copy=False)
+    where_node = select_node.args.get("where")
+    existing = where_node.this if where_node is not None else None
+    select_node.set("where", exp.Where(this=_merge_and(existing, combined)))

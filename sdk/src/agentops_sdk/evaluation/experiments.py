@@ -61,6 +61,7 @@ class LocalExperimentTracker(eval_ports.ExperimentTrackerPort):
     """Thread-safe in-memory ExperimentTrackerPort without cloud coupling."""
 
     def __init__(self) -> None:
+        """Initializes an empty thread-safe local experiment tracker."""
         self._lock = threading.Lock()
         self._runs: list[dict[str, Any]] = []
 
@@ -99,6 +100,7 @@ class _VertexExperimentTracker(eval_ports.ExperimentTrackerPort):
     def __init__(
         self, project_id: str | None = None, location: str | None = None
     ) -> None:
+        """Initializes the Vertex AI experiment tracker."""
         self._project_id = project_id
         self._location = location
 
@@ -122,6 +124,18 @@ class _VertexExperimentTracker(eval_ports.ExperimentTrackerPort):
             aiplatform.end_run()
 
 
+def _default_tracker(
+    config: ExperimentConfig,
+) -> eval_ports.ExperimentTrackerPort | None:
+    if config.tracking_backend == "local":
+        return LocalExperimentTracker()
+    if config.tracking_backend == "vertex_ai":
+        return _VertexExperimentTracker(
+            project_id=config.project_id, location=config.location
+        )
+    return None
+
+
 class ExperimentEngine:
     """Executes prompt experiment variants with sandboxed templating."""
 
@@ -131,25 +145,14 @@ class ExperimentEngine:
         *,
         tracker: eval_ports.ExperimentTrackerPort | None = None,
     ) -> None:
+        """Initializes the experiment engine with config and tracker."""
         self.config = config
         self._evaluator = in_memory.get_evaluator(
             config.evaluator, **config.evaluator_kwargs
         )
         self.tracker: eval_ports.ExperimentTrackerPort | None = (
-            tracker if tracker is not None else self._default_tracker(config)
+            tracker if tracker is not None else _default_tracker(config)
         )
-
-    @staticmethod
-    def _default_tracker(
-        config: ExperimentConfig,
-    ) -> eval_ports.ExperimentTrackerPort | None:
-        if config.tracking_backend == "local":
-            return LocalExperimentTracker()
-        if config.tracking_backend == "vertex_ai":
-            return _VertexExperimentTracker(
-                project_id=config.project_id, location=config.location
-            )
-        return None
 
     def _run_variant(
         self, variant_name: str, variant_vars: Mapping[str, Any]

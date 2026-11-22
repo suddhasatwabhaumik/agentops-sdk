@@ -30,7 +30,7 @@ pip install -e ".[cloudsql,eval]"
 
 | Extra | Optional Dependencies Included |
 | :--- | :--- |
-| `(base)` | Google Cloud Logging, BigQuery, DLP, Model Armor, Secret Manager, `google-genai`, `opentelemetry-*`, `sqlglot`, `pydantic-settings`, `jinja2`, `pyjwt` |
+| `(base)` | Google Cloud Logging, BigQuery, DLP, Model Armor, Secret Manager, `google-genai`, `opentelemetry-*`, `sqlglot>=30.0.0`, `pydantic-settings`, `jinja2`, `pyjwt>=2.10.0` |
 | `cloudsql` | `sqlalchemy`, `psycopg2-binary` |
 | `eval` | `google-cloud-aiplatform[evaluation]`, `pandas` |
 | `ragas` | `ragas`, `datasets` |
@@ -117,7 +117,7 @@ def run_workflow(user_query: str) -> str:
     return str(result["response"])
 
 
-with bind_execution_scope(session_id="sess-001", user_id="dealer-4711"):
+with bind_execution_scope(session_id="sess-001", user_id="UNIT-001"):
     output = run_workflow("Check hydraulic pump P-100 availability")
 handles.shutdown()
 ```
@@ -132,7 +132,7 @@ from agentops_sdk.security import SecurityGuard
 
 guard = SecurityGuard(scanner=LocalRuleSafetyScanner(), fail_closed=True)
 
-inbound = guard.check_input("Summarize stock levels for dealer D-10")
+inbound = guard.check_input("Summarize stock levels for tenant-acme")
 if not inbound.allowed or inbound.verdict == SecurityVerdict.BLOCK:
     raise RuntimeError(f"Blocked prompt: {inbound.violation_category}")
 
@@ -152,17 +152,17 @@ redacted = sanitizer.scrub("Reach John Doe at john.doe@example.com.")
 ```
 
 ### 3.4 SQL AST Validation & Row-Level Security
-`SQLASTValidator` enforces read-only `SELECT` statements and table allowlists via `sqlglot`. `RowLevelPolicyEngine` rewrites AST `WHERE` clauses safely with role-gated admin bypasses (`role in {"admin", "superadmin"}`).
+`SQLASTValidator` (`sqlglot>=30.0.0`) enforces read-only `SELECT` statements and table allowlists (`dataset.*`). `RowLevelPolicyEngine` performs scope-aware AST rewriting (`LEFT JOIN ... ON`, dialect-normalized CTEs, sole-`FROM` `ML.PREDICT`, `TableFromRows`/`PIVOT`/`UNPIVOT`/column-list alias rejection, post-rewrite verification) with role-gated admin bypasses (`role in {"admin", "superadmin"}`).
 
 ```python
 from agentops_sdk.sql import apply_row_level_policy
 from agentops_sdk.sql import validate_sql_query
 
-raw_sql = "SELECT part_id, region FROM analytics.dealer_stock WHERE qty > 0"
+raw_sql = "SELECT part_id, region FROM enterprise_parts.inventory_stock WHERE qty > 0"
 check = validate_sql_query(
     raw_sql,
     dialect="bigquery",
-    allowed_tables={"analytics.dealer_stock"},
+    allowed_tables={"enterprise_parts.inventory_stock"},
 )
 scoped_sql = apply_row_level_policy(
     check.sanitized_sql,
@@ -207,7 +207,7 @@ async def call_supplier_api(supplier_id: str) -> dict[str, str]:
 ```
 
 ### 3.7 Conversational Session & Long-Term Memory
-`CloudSQLSessionMemory` stores turns in Postgres/Cloud SQL (use `InMemorySessionMemory` offline), while `VertexMemoryBank` persists long-term facts using canonical `scope={"user_id": user_id}` and native `search_query` retrieval:
+`CloudSQLSessionMemory` stores turns in Postgres/Cloud SQL (use `InMemorySessionMemory` offline), while `VertexMemoryBank` persists long-term facts using canonical `scope={"user_id": user_id}`, native `search_query` retrieval, and optional `memory_type` filtering via bounded single-RPC over-fetch (`min(max(limit * 4, 20), 100)`):
 
 ```python
 from agentops_sdk.memory import CompositeMemory
@@ -220,11 +220,11 @@ memory = CompositeMemory(session_mem, long_term_mem)
 
 memory.add_message("sess-1", "user", "Prefer metric torque specs in Nm.")
 memory.create_memory(
-    "Dealer D-4711 prefers metric torque values.",
-    user_id="dealer-4711",
+    "Tenant tenant-acme prefers metric torque values.",
+    user_id="UNIT-001",
     memory_type="preference",
 )
-ctx = memory.get_context("sess-1", "dealer-4711", query="torque", strict=True)
+ctx = memory.get_context("sess-1", "UNIT-001", query="torque", strict=True)
 ```
 
 ### 3.8 Semver Prompt Registry
@@ -245,6 +245,7 @@ rendered = registry.render_prompt(
 ```
 
 ### 3.9 Evaluation Quality Gates & Prompt Experiments
+`VertexEvalTaskAdapter` and `simulator` default to `gemini-3.8-flash` (`AGENTOPS_EVAL_AUTORATER_MODEL`, full publisher URI + `judge_location="global"`), route `AutoraterConfig` via preview when needed (warning when unsupported), and populate `EvaluationResult.explanations`, `raw_scores`, and `console_url` automatically in quality gates.
 ```python
 from agentops_sdk.evaluation import ExperimentConfig
 from agentops_sdk.evaluation import ExperimentEngine
@@ -290,9 +291,9 @@ ledger.log_entry_sync(
     AuditLogEntry(
         trace_id="trace-abc",
         session_id="sess-1",
-        user_id="dealer-4711",
+        user_id="UNIT-001",
         agent_name="PartsAdvisor",
-        input_query="SELECT part_id FROM analytics.dealer_stock",
+        input_query="SELECT part_id FROM enterprise_parts.inventory_stock",
         execution_status="SUCCESS",
         rows_returned=5,
         latency_ms=42.1,
@@ -300,7 +301,7 @@ ledger.log_entry_sync(
 )
 
 exporter = InMemoryTelemetryExporter()
-with UseCaseTracker("dealer_stock_lookup", exporter=exporter) as tracker:
+with UseCaseTracker("inventory_stock_lookup", exporter=exporter) as tracker:
     tracker.start_stage("sql_query")
     tracker.add_transactions(5)
     tracker.end_stage("sql_query")
@@ -312,14 +313,14 @@ from agentops_sdk.feature_store import InMemoryFeatureOnlineStore
 
 store = InMemoryFeatureOnlineStore()
 store.seed_features(
-    "dealer_online_store",
-    "dealer_features_view",
-    {"dealer-4711": {"part_stock_ratio": 0.92, "lead_time_days": 4}},
+    "enterprise_online_store",
+    "enterprise_features_view",
+    {"UNIT-001": {"part_stock_ratio": 0.92, "lead_time_days": 4}},
 )
 features = store.read_online_features(
-    "dealer_online_store",
-    "dealer_features_view",
-    entity_ids=["dealer-4711"],
+    "enterprise_online_store",
+    "enterprise_features_view",
+    entity_ids=["UNIT-001"],
     features=["part_stock_ratio", "lead_time_days"],
 )
 ```
@@ -344,7 +345,7 @@ In GCP environments, swap `InMemoryFeatureOnlineStore` for `FeatureStoreAdminCli
 | **Security** | `SECURITY_PII_MASKING_ENABLED`, `SECURITY_JAILBREAK_THRESHOLD` | `True`, `0.80` | PII masking toggle & jailbreak confidence threshold (`0.0`–`1.0`) |
 | **Database** | `DB_TYPE`, `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE_NAME` | `"bigquery"`, `"127.0.0.1"`, `5432`, `""`, `SecretStr("")`, `"agentops"` | `DatabaseSettings` connection parameters (`DB_TYPE`: `snowflake \| bigquery \| postgres \| sap_hana \| databricks \| feature_store`) |
 | **Database** | `DB_DATABRICKS_HTTP_PATH` (`DATABRICKS_HTTP_PATH`), `DB_DATABRICKS_TOKEN` (`DATABRICKS_TOKEN`) | `""`, `SecretStr("")` | Databricks SQL Warehouse HTTP path & token (`SecretStr`) |
-| **Identity** | `AGENTOPS_IDENTITY__JWKS_URL`, `AGENTOPS_IDENTITY__CLIENT_ID`, `AGENTOPS_IDENTITY__ISSUER`, `AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS` | `None` | SSRF-guarded RS256 JWKS URL, `aud`, `iss`, and pinned JWKS host allowlist |
+| **Identity** | `AGENTOPS_IDENTITY__JWKS_URL`, `AGENTOPS_IDENTITY__CLIENT_ID`, `AGENTOPS_IDENTITY__ISSUER`, `ENTRA_*`, `JWT_PUBLIC_KEY`, `MCP_JWT_PUBLIC_KEY`, `AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS` | `None` | SSRF-guarded RS256 JWKS URL, mandatory `aud`/`iss`, Entra ID aliases (single-tenant issuer derivation), static RSA PEM public key, and pinned JWKS host allowlist |
 | **Identity** | `JWT_SECRET_KEY`, `ENVIRONMENT`, `DEV_RBAC_USER` | `None`, `""`, `""` | HS256 secret (`>=32` UTF-8 bytes outside dev); `ENVIRONMENT` gates fail-closed auth; `DEV_RBAC_USER` honored only in `dev \| development \| local \| test` |
 | **Prompts** | `PROMPT_REGISTRY_BACKEND`, `PROMPT_REGISTRY_LOCAL_DIR` | `"local"`, `"prompts"` | Default prompt backend (`local \| git \| vertex_ai \| gcs`) |
 | **Prompts** | `PROMPT_REGISTRY_GCS_BUCKET`, `PROMPT_REGISTRY_GCS_PREFIX`, `PROMPT_REGISTRY_PROJECT_ID`, `PROMPT_REGISTRY_LOCATION` | `None`, `"prompts"`, Inherits `GCPSettings` | GCS prompt storage & explicit GCP project/location overrides |

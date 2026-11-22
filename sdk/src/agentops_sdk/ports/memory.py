@@ -90,6 +90,7 @@ class LongTermMemoryPort(Protocol):
         user_id: str,
         query: str | None = None,
         limit: int = 5,
+        memory_type: str | None = None,
     ) -> list[models.MemoryItem]:
         """Retrieves memories for user_id ranked by semantic relevance."""
         ...
@@ -125,6 +126,7 @@ class LongTermMemoryPort(Protocol):
         user_id: str,
         query: str | None = None,
         limit: int = 5,
+        memory_type: str | None = None,
     ) -> list[models.MemoryItem]:
         """Asynchronously retrieves memories for user_id."""
         ...

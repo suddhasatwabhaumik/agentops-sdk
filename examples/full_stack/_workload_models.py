@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import secrets
 import tempfile
+import types
 from typing import Any
 
 from _validator_checks import RunLedger
@@ -37,12 +38,14 @@ from agentops_sdk import OutputDLPSanitizer
 from agentops_sdk import PromptRegistry
 from agentops_sdk import RegexPrivacyScrubber
 from agentops_sdk import SecurityGuard
+from agentops_sdk import VertexAIEvalConfig
 from agentops_sdk import VertexAIPromptAdapter
+from agentops_sdk import VertexEvalTaskAdapter
 
 SERVICE_NAME = "agentops-full-stack-demo"
 PROJECT_NAME = "agentops-local-demo"
 ENVIRONMENT = "local"
-FLOW_NAME = "dealer_parts_advisor"
+FLOW_NAME = "enterprise_parts_advisor"
 KPI_ID = "parts-availability"
 PL_LINE = "aftersales-revenue"
 
@@ -55,18 +58,18 @@ MODELS = ("gemini-2.5-flash", "gemini-2.5-pro")
 
 
 @dataclass(frozen=True)
-class Dealer:
-    """Dealer tenant fixture."""
+class Tenant:
+    """Customer-neutral tenant fixture."""
 
-    dealer_id: str
+    tenant_id: str
     region: str
     username: str
 
 
-DEALERS = (
-    Dealer("dealer-br-021", "BR", "ana.souza"),
-    Dealer("dealer-us-114", "US", "john.miller"),
-    Dealer("dealer-de-007", "DE", "lena.fischer"),
+TENANTS = (
+    Tenant("tenant-acme", "US", "alex.rivera@example.com"),
+    Tenant("tenant-br-021", "BR", "ana.souza@example.com"),
+    Tenant("tenant-de-007", "DE", "lena.fischer@example.com"),
 )
 
 
@@ -85,12 +88,12 @@ class Scenario:
 SCENARIOS = (
     Scenario(
         "answered",
-        "How many FLT-2750 fuel filters can I ship this week?",
+        "How many FLT-2750 fuel filters can UNIT-001 ship this week?",
         tool_output="flaky",
     ),
     Scenario(
         "answered",
-        "Do we have FLT-2750 filters for a Series-900 service?",
+        "Do we have FLT-2750 filters for a Series-700 service?",
         leaks_pii=True,
     ),
     Scenario(
@@ -104,12 +107,12 @@ SCENARIOS = (
     ),
     Scenario(
         "tool_output_rejected",
-        "When does FLT-2750 restock in Plant-US-01?",
+        "When does FLT-2750 restock for UNIT-001 in Plant-US-01?",
         tool_output="invalid",
     ),
     Scenario(
         "llm_error",
-        "Is FLT-2750 compatible with the Series-800?",
+        "Is FLT-2750 compatible with the Series-700?",
         llm_fails=True,
     ),
 )
@@ -118,7 +121,7 @@ SCENARIOS = (
 class StockReport(BaseModel):
     """Schema validated by @validate_tool_output."""
 
-    dealer_id: str
+    tenant_id: str
     part_number: str
     units_available: int = Field(ge=0)
 
@@ -133,6 +136,7 @@ class WorkloadContext:
     guard: SecurityGuard
     sanitizer: OutputDLPSanitizer
     evaluator: InMemoryEvaluator
+    vertex_evaluator: VertexEvalTaskAdapter
     memory: CompositeMemory
     audit: AuditLedger
     audit_sink: InMemoryAuditAdapter | BigQueryAuditAdapter
@@ -148,6 +152,52 @@ class UnreachableVertexAdapter:
 
     get_prompt = list_prompts = list_versions = _fail
     register_prompt = delete_prompt = _fail
+
+
+class _HermeticEvalTask:
+    """Deterministic local stub for Vertex EvalTask in hermetic mode."""
+
+    def __init__(
+        self,
+        *,
+        dataset: Any,
+        autorater_config: Any = None,
+        **_: Any,
+    ) -> None:
+        self._dataset = dataset
+        self._autorater = autorater_config
+
+    def evaluate(self, **_: Any) -> Any:
+        table = self._dataset.copy()
+        for metric in ("groundedness", "question_answering_relevance"):
+            table[f"{metric}/score"] = 0.95
+            table[f"{metric}/explanation"] = (
+                f"{metric} grounded in stock report via gemini-3.8-flash."
+            )
+        summary = {
+            "groundedness/mean": 0.95,
+            "question_answering_relevance/mean": 0.95,
+        }
+        return types.SimpleNamespace(
+            summary_metrics=summary,
+            metrics_table=table,
+        )
+
+
+def _build_vertex_evaluator(
+    *, gcp_mode: bool, project_id: str | None
+) -> VertexEvalTaskAdapter:
+    cfg = VertexAIEvalConfig(
+        project_id=project_id or "example-tenant-01",
+        location="us-central1",
+        judge_model="gemini-3.8-flash",
+        experiment="enterprise-parts-advisor-eval",
+        metrics=["groundedness", "question_answering_relevance"],
+        normalize_scores=True,
+    )
+    if gcp_mode:
+        return VertexEvalTaskAdapter(cfg)
+    return VertexEvalTaskAdapter(cfg, eval_task_factory=_HermeticEvalTask)
 
 
 def _build_gcp_deps(
@@ -198,10 +248,9 @@ def build_context(
     case_path = Path(tempfile.gettempdir()) / f"{ledger.run_id}_cases.jsonl"
     file_exp = LocalFileTelemetryExporter(case_path)
 
-    if gcp_mode:
-        deps = _build_gcp_deps(
-            os.environ["GOOGLE_CLOUD_PROJECT"], local_yaml, file_exp
-        )
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") if gcp_mode else None
+    if gcp_mode and project_id:
+        deps = _build_gcp_deps(project_id, local_yaml, file_exp)
     else:
         deps = _build_local_deps(local_yaml, file_exp)
     guard, sanitizer, audit_sink, case_exp, prompts = deps
@@ -219,6 +268,9 @@ def build_context(
         guard=guard,
         sanitizer=sanitizer,
         evaluator=InMemoryEvaluator(),
+        vertex_evaluator=_build_vertex_evaluator(
+            gcp_mode=gcp_mode, project_id=project_id
+        ),
         memory=CompositeMemory(
             InMemorySessionMemory(), InMemoryLongTermMemory()
         ),

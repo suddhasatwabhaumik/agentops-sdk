@@ -17,7 +17,6 @@ from _workload_agents import inventory_agent
 from _workload_agents import price_sync_agent
 from _workload_agents import record_quality_eval
 from _workload_agents import write_audit
-from _workload_models import DEALERS
 from _workload_models import ENVIRONMENT
 from _workload_models import FLOW_NAME
 from _workload_models import KPI_ID
@@ -26,8 +25,9 @@ from _workload_models import PL_LINE
 from _workload_models import PROJECT_NAME
 from _workload_models import SCENARIOS
 from _workload_models import SERVICE_NAME
-from _workload_models import Dealer
+from _workload_models import TENANTS
 from _workload_models import Scenario
+from _workload_models import Tenant
 from _workload_models import WorkloadContext
 from _workload_models import build_context
 from opentelemetry import trace
@@ -47,7 +47,7 @@ __all__ = [
     "SERVICE_NAME",
     "RunLedger",
     "build_context",
-    "dealer_parts_advisor",
+    "enterprise_parts_advisor",
     "run_iteration",
     "run_workload",
 ]
@@ -55,19 +55,19 @@ __all__ = [
 
 async def _run_pipeline_steps(
     question: str,
-    dealer: Dealer,
+    tenant: Tenant,
     model: str,
     scenario: Scenario,
     ctx: WorkloadContext,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     stock = await inventory_agent(
-        dealer, scenario.sql, scenario.tool_output, ctx.ledger
+        tenant, scenario.sql, scenario.tool_output, ctx.ledger
     )
     prompt = ctx.prompts.render_prompt(
         FLOW_NAME,
         {
-            "dealer_id": dealer.dealer_id,
-            "region": dealer.region,
+            "tenant_id": tenant.tenant_id,
+            "region": tenant.region,
             "question": question,
             "stock": json.dumps(stock),
         },
@@ -79,19 +79,19 @@ async def _run_pipeline_steps(
 async def _execute_guarded_pipeline(
     ctx: WorkloadContext,
     trace_id: str,
-    dealer: Dealer,
+    tenant: Tenant,
     question: str,
     model: str,
     scenario: Scenario,
     started: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
-        return await _run_pipeline_steps(question, dealer, model, scenario, ctx)
+        return await _run_pipeline_steps(question, tenant, model, scenario, ctx)
     except (AgentOpsError, TimeoutError) as err:
         await write_audit(
             ctx,
             trace_id,
-            dealer,
+            tenant,
             question,
             "FAILED",
             started,
@@ -99,6 +99,36 @@ async def _execute_guarded_pipeline(
             error=str(err),
         )
         raise
+
+
+def _recall_tenant_preferences(
+    ctx: WorkloadContext, session_id: str, tenant: Tenant, question: str
+) -> None:
+    """Seed and filter long-term preference memories via CompositeMemory."""
+    existing = ctx.memory.retrieve_memories(
+        user_id=tenant.username, memory_type="preference", limit=5
+    )
+    if not existing:
+        ctx.memory.create_memory(
+            "Prefer metric units for Series-700 parts specifications.",
+            user_id=tenant.username,
+            memory_type="preference",
+            metadata={"tenant_id": tenant.tenant_id},
+        )
+    prefs = ctx.memory.retrieve_memories(
+        user_id=tenant.username,
+        query=question,
+        memory_type="preference",
+        limit=3,
+    )
+    if not all(p.memory_type == "preference" for p in prefs):
+        raise RuntimeError(
+            "CompositeMemory preference filter returned wrong type"
+        )
+    ctx.memory.get_context(
+        session_id, tenant.username, query=question, turn_limit=5
+    )
+    ctx.ledger.memory_recalls += 1
 
 
 @trace_agent_flow(
@@ -109,10 +139,10 @@ async def _execute_guarded_pipeline(
     project_name=PROJECT_NAME,
     environment=ENVIRONMENT,
 )
-async def dealer_parts_advisor(
+async def enterprise_parts_advisor(
     question: str,
     *,
-    dealer: Dealer,
+    tenant: Tenant,
     model: str,
     scenario: Scenario,
     session_id: str,
@@ -129,34 +159,36 @@ async def dealer_parts_advisor(
     if not safety.allowed:
         err = safety.violation_category
         await write_audit(
-            ctx, trace_id, dealer, question, "BLOCKED", started, error=err
+            ctx, trace_id, tenant, question, "BLOCKED", started, error=err
         )
         return {"status": "BLOCKED", "reason": err}
 
+    _recall_tenant_preferences(ctx, session_id, tenant, question)
     ctx.memory.add_message(session_id, "user", question)
     stock, answer = await _execute_guarded_pipeline(
-        ctx, trace_id, dealer, question, model, scenario, started
+        ctx, trace_id, tenant, question, model, scenario, started
     )
     safe_text = await ctx.sanitizer.scrub_text(answer["text"])
     record_quality_eval(question, stock, safe_text, ctx)
     ctx.memory.add_message(session_id, "assistant", safe_text)
+    ctx.memory.consolidate_session(session_id, tenant.username)
     await write_audit(
-        ctx, trace_id, dealer, question, "SUCCESS", started, sql=scenario.sql
+        ctx, trace_id, tenant, question, "SUCCESS", started, sql=scenario.sql
     )
     return {"status": "ANSWERED", "answer": safe_text}
 
 
 async def _dispatch_flow(
     scenario: Scenario,
-    dealer: Dealer,
+    tenant: Tenant,
     model: str,
     session_id: str,
     ctx: WorkloadContext,
 ) -> str:
     try:
-        res = await dealer_parts_advisor(
+        res = await enterprise_parts_advisor(
             scenario.question,
-            dealer=dealer,
+            tenant=tenant,
             model=model,
             scenario=scenario,
             session_id=session_id,
@@ -176,13 +208,13 @@ async def _dispatch_flow(
 async def _run_scenario(
     iteration: int, index: int, scenario: Scenario, ctx: WorkloadContext
 ) -> None:
-    dealer = DEALERS[(iteration + index) % len(DEALERS)]
+    tenant = TENANTS[(iteration + index) % len(TENANTS)]
     model = MODELS[(iteration + index) % len(MODELS)]
     token = create_access_token(
         {
-            "sub": dealer.username,
-            "tenant_id": dealer.dealer_id,
-            "region": dealer.region,
+            "sub": tenant.username,
+            "tenant_id": tenant.tenant_id,
+            "region": tenant.region,
         },
         secret_key=ctx.jwt_key,
     )
@@ -203,7 +235,7 @@ async def _run_scenario(
             pl_impact_line=PL_LINE,
         ) as tracker,
     ):
-        outcome = await _dispatch_flow(scenario, dealer, model, session_id, ctx)
+        outcome = await _dispatch_flow(scenario, tenant, model, session_id, ctx)
         tracker.add_transactions(1)
         ctx.ledger.case_records += 1
         if outcome != scenario.outcome:
@@ -218,18 +250,18 @@ async def run_iteration(iteration: int, ctx: WorkloadContext) -> None:
     for idx, scenario in enumerate(SCENARIOS):
         await _run_scenario(iteration, idx, scenario, ctx)
 
-    dealer = DEALERS[iteration % len(DEALERS)]
+    tenant = TENANTS[iteration % len(TENANTS)]
     with bind_execution_scope(
         session_id=f"{ctx.ledger.run_id}-sync-{iteration}",
-        user_id=dealer.username,
-        claims={"tenant_id": dealer.dealer_id},
+        user_id=tenant.username,
+        claims={"tenant_id": tenant.tenant_id},
     ):
         await price_sync_agent(burst=10, ledger=ctx.ledger)
 
     ctx.prompts_during_outage.render_prompt(
         FLOW_NAME,
         {
-            "dealer_id": "n/a",
+            "tenant_id": "n/a",
             "region": "n/a",
             "question": "fallback",
             "stock": "{}",

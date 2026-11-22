@@ -82,6 +82,7 @@ class PromptRegistry:
         location: str | None = None,
         fallback_to_local: bool | None = None,
     ) -> None:
+        """Initializes PromptRegistry with primary and optional fallback."""
         cfg = settings.get_prompt_settings()
         eff = (backend or cfg.backend).strip().lower()
         if adapter is None and eff not in _VALID_BACKENDS:

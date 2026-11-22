@@ -76,7 +76,7 @@ sdk/src/agentops_sdk/
 
 | Install Target | Packages Included | Primary Use Case |
 | :--- | :--- | :--- |
-| `pip install -e .` (Base) | `pydantic`, `pydantic-settings`, `opentelemetry-*`, `google-cloud-logging`, `google-cloud-bigquery`, `google-cloud-dlp`, `google-cloud-secret-manager`, `google-cloud-modelarmor`, `google-genai`, `sqlglot`, `pyjwt`, `jinja2` | Core instrumentation, safety, DLP, audit ledger, tracing, SQL AST/RLS, prompts |
+| `pip install -e .` (Base) | `pydantic`, `pydantic-settings`, `opentelemetry-*`, `google-cloud-logging`, `google-cloud-bigquery`, `google-cloud-dlp`, `google-cloud-secret-manager`, `google-cloud-modelarmor`, `google-genai`, `sqlglot>=30.0.0`, `pyjwt>=2.10.0`, `jinja2` | Core instrumentation, safety, DLP, audit ledger, tracing, SQL AST/RLS, prompts |
 | `.[cloudsql]` | `sqlalchemy`, `psycopg2-binary` | `CloudSQLSessionMemory` Postgres persistence |
 | `.[eval]` | `google-cloud-aiplatform[evaluation]`, `pandas` | `VertexEvalTaskAdapter`, Vertex AI Agent Engine evals & `ExperimentEngine.get_summary_table()` |
 | `.[ragas]` | `ragas`, `datasets` | `RagasEvaluator` metrics |
@@ -129,7 +129,7 @@ class SessionMemoryPort(Protocol):
 @runtime_checkable
 class LongTermMemoryPort(Protocol):
     def create_memory(self, fact: str, *, user_id: str, memory_type: str = "fact", metadata=None, ttl_seconds=None) -> models.MemoryItem: ...
-    def retrieve_memories(self, *, user_id: str, query: str | None = None, limit: int = 5) -> list[models.MemoryItem]: ...
+    def retrieve_memories(self, *, user_id: str, query: str | None = None, memory_type: str | None = None, limit: int = 5) -> list[models.MemoryItem]: ...
     def purge_memories(self, *, user_id: str) -> int: ...
 ```
 
@@ -158,16 +158,16 @@ from agentops_sdk.sql import apply_row_level_policy, validate_sql_query
 guard = SecurityGuard(scanner=CloudModelArmorScanner(), fail_closed=True)
 ledger = AuditLedger(sink=BigQueryAuditAdapter(dataset_id="agentops_governance"))
 
-with bind_execution_scope(session_id="sess-1", user_id="dealer-4711"):
+with bind_execution_scope(session_id="sess-1", user_id="UNIT-001"):
     check = guard.check_input("List hydraulic stock for my region")
     sql_res = validate_sql_query(
-        "SELECT part_id, region FROM analytics.dealer_stock",
+        "SELECT part_id, region FROM enterprise_parts.inventory_stock",
         dialect="bigquery",
-        allowed_tables={"analytics.dealer_stock"},
+        allowed_tables={"enterprise_parts.inventory_stock"},
     )
     scoped_sql = apply_row_level_policy(
         sql_res.sanitized_sql,
-        {"sub": "dealer-4711", "region": "Germany"},
+        {"sub": "UNIT-001", "region": "Germany"},
         dialect="bigquery",
         policy_columns={"region": "region"},
     )

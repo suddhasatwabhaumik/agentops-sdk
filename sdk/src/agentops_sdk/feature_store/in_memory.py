@@ -36,6 +36,7 @@ class InMemoryFeatureOnlineStore:
     """Thread-safe in-memory adapter implementing FeatureOnlineStorePort."""
 
     def __init__(self) -> None:
+        """Initializes an empty thread-safe InMemoryFeatureOnlineStore."""
         self._lock = threading.RLock()
         self._store: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
 

@@ -3,6 +3,7 @@ name: CI Tests, Build SDK Wheel & GitHub Release
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
@@ -21,13 +22,22 @@ permissions:
   contents: read
 
 jobs:
-  unit-and-regression-tests:
-    name: Run SDK Unit & Regression Tests
+  build-and-test:
+    name: Build, Test & Verify Wheel
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_version: ${{ steps.release_notes.outputs.release_version }}
+      release_title: ${{ steps.release_notes.outputs.release_title }}
+      resolved_mode: ${{ steps.release_notes.outputs.resolved_mode }}
+      should_publish_release: ${{ steps.release_notes.outputs.should_publish_release }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (Full Git History)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -35,10 +45,10 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install SDK and test dependencies
+      - name: Install SDK, test & packaging dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,all]"
+          python -m pip install -e ".[all,dev]" build wheel twine packaging
 
       - name: Run Ruff Linter, Format Check & Mypy Strict
         run: |
@@ -59,30 +69,6 @@ jobs:
           if [ -f eval_quality_gate_summary.md ]; then
             cat eval_quality_gate_summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
-
-  build-and-release:
-    name: Build Wheel & Publish GitHub Release
-    needs: unit-and-regression-tests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout repository (Full Git History)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install packaging & processing dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install build wheel packaging twine
 
       - name: Consolidate Release Notes (Smart Auto-Detection)
         id: release_notes
@@ -106,6 +92,17 @@ jobs:
           echo "Building wheel from repository root..."
           python -m build --wheel . --outdir dist/
 
+      - name: Verify Tag Matches Package Version
+        if: github.ref_type == 'tag'
+        run: |
+          PKG_VER=$(python -c "import re; print(re.search(r'^__version__\s*=\s*[\"\x27]([^\"\x27]+)[\"\x27]', open('sdk/src/agentops_sdk/__init__.py', encoding='utf-8').read(), re.M).group(1))")
+          EXPECTED_TAG="v${PKG_VER}"
+          if [ "${GITHUB_REF_NAME}" != "${EXPECTED_TAG}" ]; then
+            echo "Error: Tag ${GITHUB_REF_NAME} != ${EXPECTED_TAG}" >&2
+            exit 1
+          fi
+          echo "Verified tag ${GITHUB_REF_NAME} matches package version."
+
       - name: Verify Wheel Integrity & Contents
         run: |
           echo "=== Built Artifacts in dist/ ==="
@@ -116,20 +113,23 @@ jobs:
           echo "=== Twine Package Metadata Validation ==="
           twine check dist/*.whl
 
-      - name: Smoke-Test Base Wheel & [all] Extras Wheel in Isolated Virtualenvs
+      - name: Isolated Off-sys.path Wheel Verification
         run: |
           WHEEL_PATH=$(ls dist/*.whl | head -n 1)
+          mv sdk/src /tmp/sdk_src_backup
+          trap 'mv /tmp/sdk_src_backup sdk/src' EXIT
+
           python -m venv /tmp/wheel-base-venv
           /tmp/wheel-base-venv/bin/pip install --upgrade pip
           /tmp/wheel-base-venv/bin/pip install "${WHEEL_PATH}" pytest
-          /tmp/wheel-base-venv/bin/python -c "import agentops_sdk; assert hasattr(agentops_sdk, '__version__'); print('Verified base wheel version:', agentops_sdk.__version__)"
+          /tmp/wheel-base-venv/bin/python -c "import agentops_sdk; assert 'site-packages' in (agentops_sdk.__file__ or ''), agentops_sdk.__file__; print('Verified base wheel:', agentops_sdk.__version__)"
           /tmp/wheel-base-venv/bin/pytest --help | grep -q -- "--eval-mode"
           rm -rf /tmp/wheel-base-venv
 
           python -m venv /tmp/wheel-all-venv
           /tmp/wheel-all-venv/bin/pip install --upgrade pip
-          /tmp/wheel-all-venv/bin/pip install "${WHEEL_PATH}[all]" pytest
-          /tmp/wheel-all-venv/bin/python -c "import agentops_sdk, httpx, mcp, pandas, sqlalchemy, ragas, datasets; print('Verified [all] extras wheel imports')"
+          /tmp/wheel-all-venv/bin/pip install "${WHEEL_PATH}[all]" pytest pytest-asyncio fastapi python-dotenv
+          /tmp/wheel-all-venv/bin/pytest tests/unit tests/contract -q --eval-mode=in_memory
           rm -rf /tmp/wheel-all-venv
 
       - name: Generate Cryptographic SHA-256 Checksums
@@ -149,16 +149,36 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  release:
+    name: Publish GitHub Release
+    needs: build-and-test
+    if: github.event_name != 'pull_request' && (github.ref_type == 'tag' || needs.build-and-test.outputs.should_publish_release == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Workflow Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: agentops-sdk-release-${{ github.sha }}
+          path: dist
+
       - name: Publish to GitHub Releases
-        if: github.event_name != 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RAW_VERSION: ${{ steps.release_notes.outputs.release_version }}
-          RAW_TITLE: ${{ steps.release_notes.outputs.release_title }}
-          RESOLVED_MODE: ${{ steps.release_notes.outputs.resolved_mode }}
-          SHOULD_PUBLISH: ${{ steps.release_notes.outputs.should_publish_release }}
+          RAW_VERSION: ${{ needs.build-and-test.outputs.release_version }}
+          RAW_TITLE: ${{ needs.build-and-test.outputs.release_title }}
+          RESOLVED_MODE: ${{ needs.build-and-test.outputs.resolved_mode }}
+          SHOULD_PUBLISH: ${{ needs.build-and-test.outputs.should_publish_release }}
         run: |
           VERSION="${RAW_VERSION}"
+          if [ -z "$VERSION" ] && [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          fi
           if [ -z "$VERSION" ]; then
             VERSION="v$(python -c "import re; print(re.search(r'^__version__\s*=\s*[\"\x27]([^\"\x27]+)[\"\x27]', open('sdk/src/agentops_sdk/__init__.py', encoding='utf-8').read(), re.M).group(1))")"
           fi
@@ -174,10 +194,6 @@ jobs:
           echo "Target Release: ${VERSION} - ${TITLE} (mode=${RESOLVED_MODE}, should_publish=${SHOULD_PUBLISH})"
 
           if gh release view "${VERSION}" >/dev/null 2>&1; then
-            if [ "${RESOLVED_MODE}" = "latest" ] && [ "${SHOULD_PUBLISH}" = "false" ]; then
-              echo "Release ${VERSION} already exists and no new release notes were added in this commit. Skipping release overwrite."
-              exit 0
-            fi
             echo "Release ${VERSION} already exists. Updating release notes and assets..."
             gh release edit "${VERSION}" \
               --title "${TITLE}" \

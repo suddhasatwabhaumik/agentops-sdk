@@ -100,6 +100,7 @@ class SecurityGuard:
         *,
         fail_closed: bool | None = None,
     ) -> None:
+        """Initializes the security guard with scanner and fail-closed mode."""
         fc_default = settings.get_security_settings().fail_closed
         self._fail_closed = fc_default if fail_closed is None else fail_closed
         self._scanner: ports.security.SafetyScannerPort = (

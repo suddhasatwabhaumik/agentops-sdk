@@ -96,10 +96,10 @@ ledger = AuditLedger(
 entry = AuditLogEntry(
     trace_id="trace-1234",
     session_id="sess-5678",
-    user_id="dealer-4711",
+    user_id="UNIT-001",
     agent_name="InventorySQLAgent",
     input_query="Show available hydraulic valves in Germany",
-    generated_sql="SELECT part_id, qty FROM analytics.dealer_stock WHERE country = 'Germany'",
+    generated_sql="SELECT part_id, qty FROM enterprise_parts.inventory_stock WHERE country = 'Germany'",
     execution_status="SUCCESS",
     rows_returned=14,
     latency_ms=84.2,

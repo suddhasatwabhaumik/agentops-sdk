@@ -16,7 +16,7 @@ CompositeMemory ────┤      add_message / get_messages       table agen
 |---|---|
 | `VertexMemoryBank(reasoning_engine_name=..., project_id=..., location=...)` | Persists long-term facts per user using canonical `scope={"user_id": user_id}` (`ADR-4`) |
 | `create_memory(fact, user_id=..., memory_type=..., metadata=...)` | Stores a persistent fact with type and metadata preserved cleanly |
-| `retrieve_memories(user_id=..., query=..., limit=...)` | Lists recent memories or runs semantic `search_query` recall when `query` is provided |
+| `retrieve_memories(user_id=..., query=..., memory_type=..., limit=...)` | Lists recent memories or runs semantic `search_query` recall when `query` is provided; optional `memory_type` filtering uses bounded single-RPC over-fetch `min(max(limit * 4, 20), 100)` |
 | `purge_memories(user_id=...)` | Deletes all long-term memories scoped to `user_id` |
 | `CloudSQLSessionMemory(connection_url=..., table_name=...)` | Stores session turns in Cloud SQL PostgreSQL with cursor (`after_id`, `before_id`) and offset (`get_messages`) pagination |
 | `CompositeMemory(session_memory, long_term_memory).get_context(..., strict=True)` | Merges short-term turns and relevant long-term facts; `strict=True` (default) surfaces backend failures instead of hiding errors |

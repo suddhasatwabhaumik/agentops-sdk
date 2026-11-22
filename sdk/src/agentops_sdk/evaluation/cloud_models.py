@@ -117,7 +117,7 @@ class UserSimulatorConfig(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(frozen=True)
 
     max_turns: int = pydantic.Field(default=5, ge=1, le=50)
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3.8-flash"
     simulation_instruction: str | None = None
     temperature: float | None = None
 

@@ -71,7 +71,7 @@ All 15 tutorials align cleanly with `agentops-sdk` v1.0.0 against `<your-gcp-pro
 
 | Tutorials | Services Exercised | Prerequisite / Check (`00_setup/preflight.py`) |
 |---|---|---|
-| `01`, `03`, `04`, `11`, `13` | Gemini, Rate Limiter, Tool Validation, Vertex Prompts, Vertex Evaluation (`global` judge default `gemini-2.5-flash`) | Vertex AI User (`roles/aiplatform.user`) |
+| `01`, `03`, `04`, `11`, `13` | Gemini, Rate Limiter, Tool Validation, Vertex Prompts, Vertex Evaluation (`global` judge default `gemini-3.8-flash`, `AGENTOPS_EVAL_AUTORATER_MODEL`) | Vertex AI User (`roles/aiplatform.user`) |
 | `07`, `08` | Secret Manager + JWT / Identity | Secret Manager read; set `TUTORIAL_STORE_TOKEN=1` / `TUTORIAL_STORE_SECRET=1` on first run if secrets are empty |
 | `02`, `05`, `06`, `14`, `15` | BigQuery Case Telemetry, SQL Guard, RLS, Audit Ledger, Feature Store | `roles/bigquery.dataEditor`, `roles/bigquery.jobUser`, and `00_setup/provision.py bigquery` (`agentops_tutorial` dataset) |
 | `09` | Cloud Model Armor (`agentops-input-guard` / `agentops-output-guard`) | Centrally provisioned templates + `roles/modelarmor.user` & `roles/modelarmor.viewer` |

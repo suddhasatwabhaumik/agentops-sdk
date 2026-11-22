@@ -60,11 +60,8 @@ def _check_thresholds(
 
 def _emit_record(
     test_name: str,
-    mode: str,
-    scores: Mapping[str, float],
+    result: models.EvaluationResult,
     thresholds: Mapping[str, float],
-    is_passing: bool,
-    console_url: str,
     evaluator: eval_ports.EvaluatorPort,
 ) -> None:
     provider_name = str(
@@ -73,11 +70,12 @@ def _emit_record(
     reporting.get_session_reporter().add_record(
         reporting.QualityGateTestRecord(
             test_name=test_name,
-            eval_mode=mode,
-            metrics=dict(scores),
+            eval_mode=result.eval_mode,
+            metrics=dict(result.scores),
             thresholds=dict(thresholds),
-            is_passing=is_passing,
-            console_url=console_url or None,
+            is_passing=result.is_passing,
+            explanations=dict(result.explanations),
+            console_url=result.console_url or None,
             provider=provider_name,
         )
     )
@@ -104,60 +102,117 @@ def _resolve_gate_inputs(
     return resolved_ev, threshold_map, active
 
 
+def _extract_suite_explanations(
+    suite: models.EvaluationSuiteResult,
+) -> dict[str, str]:
+    grouped: dict[str, list[str]] = {}
+    for inst in suite.instances:
+        for name, score in inst.metrics.items():
+            if score.explanation:
+                grouped.setdefault(name, []).append(score.explanation)
+    return {name: "\n".join(parts) for name, parts in grouped.items()}
+
+
 def _build_gate_result(
     scores: dict[str, float],
     threshold_map: Mapping[str, float],
     mode: str,
     run_name: str,
     console_url: str,
+    *,
+    raw_scores: dict[str, float] | None = None,
+    explanations: dict[str, str] | None = None,
 ) -> models.EvaluationResult:
     failed = _check_thresholds(scores, threshold_map)
     return models.EvaluationResult(
         scores=scores,
-        raw_scores=scores,
+        raw_scores=raw_scores if raw_scores is not None else scores,
         is_passing=not failed,
         failed_metrics=failed,
+        explanations=explanations or {},
         eval_mode=mode,
         run_name=run_name,
         console_url=console_url,
     )
 
 
-def _evaluate_gate(
-    payload: Sequence[Mapping[str, Any]],
-    *,
-    is_trajectory: bool,
-    thresholds: Mapping[str, float] | None,
-    metrics: Sequence[str] | None,
-    evaluator: _EvaluatorSpec,
-    ev_kwargs: Mapping[str, Any] | None,
+def _suite_gate_result(
+    suite: models.EvaluationSuiteResult,
+    threshold_map: Mapping[str, float],
     run_name: str,
     console_url: str,
-    record_report: bool,
-    test_name: str,
 ) -> models.EvaluationResult:
-    resolved_ev, threshold_map, active = _resolve_gate_inputs(
-        evaluator, ev_kwargs, thresholds, metrics, is_trajectory=is_trajectory
+    scores = dict(suite.summary_scores)
+    resolved_run = run_name or (
+        suite.experiment_run_name if suite.console_url else ""
     )
+    return _build_gate_result(
+        scores,
+        threshold_map,
+        "pointwise",
+        resolved_run,
+        console_url or suite.console_url or "",
+        raw_scores=dict(suite.raw_summary_scores or scores),
+        explanations=_extract_suite_explanations(suite),
+    )
+
+
+def _run_gate_evaluator(
+    resolved_ev: eval_ports.EvaluatorPort,
+    payload: Sequence[Mapping[str, Any]],
+    active: Sequence[str],
+    threshold_map: Mapping[str, float],
+    *,
+    is_trajectory: bool,
+    run_name: str,
+    console_url: str,
+) -> models.EvaluationResult:
+    suite_fn = (
+        None if is_trajectory else getattr(resolved_ev, "evaluate_suite", None)
+    )
+    if callable(suite_fn):
+        suite = suite_fn(
+            payload,
+            metrics=active,
+            experiment_run_name=run_name or None,
+            thresholds=threshold_map,
+        )
+        return _suite_gate_result(suite, threshold_map, run_name, console_url)
     scores = (
         resolved_ev.evaluate_trajectory(payload, metrics=active)
         if is_trajectory
         else resolved_ev.evaluate(payload, metrics=active)
     )
     mode = "trajectory" if is_trajectory else "pointwise"
-    result = _build_gate_result(
+    return _build_gate_result(
         scores, threshold_map, mode, run_name, console_url
     )
+
+
+def _evaluate_gate(
+    payload: Sequence[Mapping[str, Any]],
+    is_trajectory: bool,
+    thresholds: Mapping[str, float] | None,
+    metrics: Sequence[str] | None,
+    evaluator: _EvaluatorSpec,
+    ev_kwargs: Mapping[str, Any] | None,
+    opts: tuple[str, str, bool, str],
+) -> models.EvaluationResult:
+    run_name, console_url, record_report, test_name = opts
+    resolved_ev, threshold_map, active = _resolve_gate_inputs(
+        evaluator, ev_kwargs, thresholds, metrics, is_trajectory=is_trajectory
+    )
+    result = _run_gate_evaluator(
+        resolved_ev,
+        payload,
+        active,
+        threshold_map,
+        is_trajectory=is_trajectory,
+        run_name=run_name,
+        console_url=console_url,
+    )
     if record_report:
-        _emit_record(
-            test_name,
-            mode,
-            scores,
-            threshold_map,
-            result.is_passing,
-            console_url,
-            resolved_ev,
-        )
+        _emit_record(test_name, result, threshold_map, resolved_ev)
     return result
 
 
@@ -175,17 +230,9 @@ def evaluate_agent_response(
 ) -> models.EvaluationResult:
     """Evaluates response dataset against quality thresholds."""
     rows = [dataset] if isinstance(dataset, Mapping) else list(dataset)
+    opts = (run_name, console_url, record_report, test_name)
     return _evaluate_gate(
-        rows,
-        is_trajectory=False,
-        thresholds=thresholds,
-        metrics=metrics,
-        evaluator=evaluator,
-        ev_kwargs=evaluator_kwargs,
-        run_name=run_name,
-        console_url=console_url,
-        record_report=record_report,
-        test_name=test_name,
+        rows, False, thresholds, metrics, evaluator, evaluator_kwargs, opts
     )
 
 
@@ -202,17 +249,15 @@ def evaluate_agent_trajectory(
     test_name: str = "agent_trajectory_gate",
 ) -> models.EvaluationResult:
     """Evaluates multi-turn agent trajectory against quality thresholds."""
+    opts = (run_name, console_url, record_report, test_name)
     return _evaluate_gate(
         list(trajectory),
-        is_trajectory=True,
-        thresholds=thresholds,
-        metrics=metrics,
-        evaluator=evaluator,
-        ev_kwargs=evaluator_kwargs,
-        run_name=run_name,
-        console_url=console_url,
-        record_report=record_report,
-        test_name=test_name,
+        True,
+        thresholds,
+        metrics,
+        evaluator,
+        evaluator_kwargs,
+        opts,
     )
 
 

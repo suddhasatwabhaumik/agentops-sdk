@@ -1,6 +1,6 @@
 # 05 · SQL Guard: LLM-Written SQL Runs Only If the AST Is Safe (`v1.0.0`)
 
-**What you learn:** how to let an LLM generate analytical SQL while guaranteeing via AST parsing (`sqlglot`) that only read-only `SELECT` statements targeting allowlisted tables reach BigQuery.
+**What you learn:** how to let an LLM generate analytical SQL while guaranteeing via AST parsing (`sqlglot>=30.0.0`) that only read-only `SELECT` statements targeting allowlisted tables reach BigQuery.
 
 ```
 question ──► Gemini ──► SQL text ──► validate_sql_query / @validate_sql_query_decorator
@@ -21,13 +21,13 @@ question ──► Gemini ──► SQL text ──► validate_sql_query / @val
 | `@validate_sql_query_decorator(*, dialect="bigquery", allowed_tables=None, sql_params=["sql"], auto_sanitize=True)` | Validates the named SQL argument before executing the decorated query function; raises `SQLGovernanceError` if unsafe |
 | `SQLASTValidator(*, dialect="bigquery", allowed_tables=None)` | Configurable class instance behind both helpers |
 
-Allowlist patterns accept exact `project.dataset.table` identifiers or boundary-anchored wildcards (`project.dataset.*`). Unqualified table names (`FROM dealer_stock`) are blocked whenever `allowed_tables` is configured.
+Allowlist patterns accept exact `project.dataset.table` identifiers or boundary-anchored wildcards (`project.dataset.*`). Unqualified table names (`FROM inventory_stock`) are blocked whenever `allowed_tables` is configured.
 
 ## GCP resources used
 
 | Resource | Why | Access needed |
 |---|---|---|
-| BigQuery table `agentops_tutorial.dealer_stock` | Approved target table (provisioned via `00_setup/provision.py bigquery`) | `roles/bigquery.dataViewer` on the dataset, `roles/bigquery.jobUser` on the project |
+| BigQuery table `agentops_tutorial.inventory_stock` | Approved target table (provisioned via `00_setup/provision.py bigquery`) | `roles/bigquery.dataViewer` on the dataset, `roles/bigquery.jobUser` on the project |
 | Vertex AI, Gemini | Generates the SQL queries in cases 1 & 2 | `roles/aiplatform.user` |
 
 Set `TUTORIAL_BQ_TABLE` to target a different table (must include a `country` column for Tutorial `06`).

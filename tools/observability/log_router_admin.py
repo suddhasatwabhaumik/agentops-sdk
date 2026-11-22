@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import argparse
+from collections.abc import Sequence
 import logging
 from typing import Any
 
@@ -233,7 +235,18 @@ class LogRouterManager:
         )
 
 
-def main(argv: list[str] | None = None) -> None:
+def _print_setup_dry_run(args: argparse.Namespace) -> None:
+    bucket = args.bucket or f"{args.project}-agentops-observability-logs"
+    bq_dest = (
+        f"bigquery.googleapis.com/projects/{args.project}/"
+        f"datasets/{args.dataset}"
+    )
+    gcs_dest = f"storage.googleapis.com/{bucket}"
+    print(f"[DRY-RUN] BigQuery Sink ({args.bq_sink}) -> {bq_dest}")
+    print(f"[DRY-RUN] GCS Sink ({args.gcs_sink}) -> {gcs_dest}")
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     """CLI entrypoint for Log Router provisioning and telemetry export."""
     logging.basicConfig(
         level=logging.INFO,
@@ -243,9 +256,18 @@ def main(argv: list[str] | None = None) -> None:
         require_project=False
     )
     parser = _sink_ops.build_cli_parser(default_proj, default_loc)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(list(argv) if argv is not None else None)
     if not args.project:
         parser.error("--project or GOOGLE_CLOUD_PROJECT is required.")
+    if (
+        args.command == "export"
+        and getattr(args, "destination", None) == "file"
+        and not (args.output_file or "").strip()
+    ):
+        parser.error("--destination file requires --output-file.")
+    if args.command == "setup" and getattr(args, "dry_run", False):
+        _print_setup_dry_run(args)
+        return
     manager = LogRouterManager(
         project_id=args.project,
         region=args.region,

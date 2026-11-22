@@ -123,10 +123,12 @@ def test_local_file_audit_rotation_close_and_handle_error(
         orig_stream = adapter._handler.stream
         bad_stream = SimpleNamespace(
             tell=lambda: 0,
+            seek=lambda *_a: 0,
             write=lambda *_a: (_ for _ in ()).throw(OSError("disk full")),
             flush=lambda: None,
             close=orig_stream.close,
         )
+        monkeypatch.setattr(adapter._handler, "maxBytes", 10_000)
         monkeypatch.setattr(adapter._handler, "stream", bad_stream)
         with pytest.raises(exceptions.AuditLedgerError, match="disk full"):
             adapter.write_entry(_make_entry())

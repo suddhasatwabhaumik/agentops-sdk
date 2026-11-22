@@ -10,7 +10,7 @@ subject to your agreement with Google.
 
 `agentops_sdk.evaluation` delivers a modular, port-based evaluation suite built around `EvaluatorPort` and `ExperimentTrackerPort` (`agentops_sdk.ports.evaluation`):
 
-1. **Google Cloud Vertex AI Evaluation (`VertexEvalTaskAdapter`, `[eval]` extra)**: Wraps `vertexai.evaluation.EvalTask` and `vertexai._genai` evaluation APIs with normalized `0.0–1.0` scoring, experiment tracking, and Cloud Console deep links (`judge_location="global"`, `judge_model="gemini-2.5-flash"` default).
+1. **Google Cloud Vertex AI Evaluation (`VertexEvalTaskAdapter`, `[eval]` extra)**: Wraps `vertexai.evaluation.EvalTask` and `vertexai._genai` evaluation APIs with normalized `0.0–1.0` scoring, experiment tracking, and Cloud Console deep links (`judge_location="global"`, `judge_model="gemini-3.8-flash"` default via `AGENTOPS_EVAL_AUTORATER_MODEL` resolved to full publisher URI). Routes `AutoraterConfig` via preview when required (emitting a warning when unsupported) and automatically attaches `EvaluationResult.explanations`, `raw_scores`, and `console_url` in quality gates.
 2. **Pluggable Multi-Evaluator Registry (`EvaluatorRegistry`)**: Supports built-in keys `"in_memory"`, `"heuristic"`, `"ragas"`, `"vertex"`, `"vertex_ai"`, and `"composite"`, plus runtime registration of custom `EvaluatorPort` classes.
 3. **Explicit Fail-Loud Execution (Zero Silent Mock Fallbacks)**: Offline CI suites explicitly select `InMemoryEvaluator` (`evaluator="in_memory"`) or `HeuristicEvaluator` (`evaluator="heuristic"`). Cloud evaluators (`VertexEvalTaskAdapter`, `genai_evals`, `metric_registry`, `simulator`) raise `EvaluationError` cleanly on empty inputs or service failures instead of silently returning `0.0` or mock outputs.
 4. **Gen AI Evaluation Extensions**: Scenario generation (`generate_conversation_scenarios`), user simulation (`simulate_agent_conversations`), AST-guarded custom code-execution metrics (`register_code_execution_metric`), custom LLM judge metrics (`register_llm_metric`), automatic failure clustering (`generate_loss_clusters`), and managed Agent Engine evaluation (`evaluate_agent_engine`).
@@ -147,7 +147,7 @@ config = VertexAIEvalConfig(
     project_id="<your-gcp-project-id>",
     location="europe-west4",
     judge_location="global",
-    judge_model="gemini-2.5-flash",
+    judge_model="gemini-3.8-flash",
     experiment="diagnostics-qa-v1",
     metrics=["groundedness", "question_answering_quality"],
 )
@@ -273,7 +273,7 @@ def diagnostic_agent(prompt: str) -> str:
 trajectories = simulate_agent_conversations(
     scenarios,
     diagnostic_agent,
-    simulator_config=UserSimulatorConfig(max_turns=3),
+    simulator_config=UserSimulatorConfig(model="gemini-3.8-flash", max_turns=3),
     project_id="<your-gcp-project-id>",
     location="europe-west4",
 )

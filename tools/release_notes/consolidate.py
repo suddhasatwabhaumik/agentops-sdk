@@ -47,9 +47,33 @@ def get_latest_release_tag() -> str:
         return ""
 
 
-def _resolve_diff_base(base_sha: str) -> str:
+def _rev_parse_commit(ref: str) -> str:
+    try:
+        return _run_git(["rev-parse", "--verify", f"{ref}^{{commit}}"]).strip()
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _step_back_from_head(target_head: str) -> str:
+    try:
+        tag = _run_git(
+            ["describe", "--tags", "--abbrev=0", f"{target_head}^"]
+        ).strip()
+        if tag:
+            return tag
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        pass
+    return f"{target_head}~1"
+
+
+def _resolve_diff_base(base_sha: str, head_sha: str = "HEAD") -> str:
+    target_head = head_sha or "HEAD"
     if not base_sha or base_sha == _ZERO_SHA:
-        return get_latest_release_tag() or "HEAD~1"
+        return _step_back_from_head(target_head)
+    resolved_base = _rev_parse_commit(base_sha)
+    resolved_head = _rev_parse_commit(target_head)
+    if resolved_base and resolved_head and resolved_base == resolved_head:
+        return _step_back_from_head(target_head)
     return base_sha
 
 
@@ -57,7 +81,7 @@ def get_newly_added_files(
     base_sha: str, head_sha: str, releases_dir: str
 ) -> list[str]:
     """Finds newly added markdown files in releases_dir between commits."""
-    resolved_base = _resolve_diff_base(base_sha)
+    resolved_base = _resolve_diff_base(base_sha, head_sha or "HEAD")
     args = [
         "diff",
         "--name-only",
@@ -92,7 +116,7 @@ def has_release_notes_or_banner_updates(
     base_sha: str, head_sha: str, releases_dir: str
 ) -> bool:
     """Checks whether release notes or consolidate.py were modified."""
-    resolved_base = _resolve_diff_base(base_sha)
+    resolved_base = _resolve_diff_base(base_sha, head_sha or "HEAD")
     args = [
         "diff",
         "--name-only",

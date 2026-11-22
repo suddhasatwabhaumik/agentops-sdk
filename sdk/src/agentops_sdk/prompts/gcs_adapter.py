@@ -34,6 +34,7 @@ class GCSPromptAdapter:
         retry: gcp_retry.Retry | None = None,
         timeout_seconds: float = 15.0,
     ) -> None:
+        """Initializes GCSPromptAdapter for the target bucket and prefix."""
         if not bucket_name or not bucket_name.strip():
             raise exceptions.ConfigurationError("bucket_name is required.")
         self._bucket_name = settings.validate_gcp_identifier(

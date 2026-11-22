@@ -10,7 +10,8 @@ import importlib
 import os
 from pathlib import Path
 import sys
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -36,17 +37,47 @@ def isolated_global_reporter() -> Iterator[None]:
         session_reporter.reset()
 
 
+class _FakeOptionGroup:
+    def __init__(self) -> None:
+        self.options: list[str] = []
+
+    def addoption(self, *args: Any, **kwargs: Any) -> None:
+        del kwargs
+        self.options.append(str(args[0]))
+
+
+class _FakeParser:
+    def __init__(self, group: _FakeOptionGroup) -> None:
+        self._group = group
+        self.groups_requested: list[tuple[str, str]] = []
+
+    def getgroup(self, name: str, description: str = "") -> _FakeOptionGroup:
+        self.groups_requested.append((name, description))
+        return self._group
+
+
+class _FakeConfig:
+    def __init__(self, rootpath: Path, opts: dict[str, Any]) -> None:
+        self.rootpath = rootpath
+        self._opts = opts
+        self.ini_lines: list[tuple[str, str]] = []
+
+    def getoption(self, key: str, default: Any = None) -> Any:
+        return self._opts.get(key, default)
+
+    def addinivalue_line(self, name: str, line: str) -> None:
+        self.ini_lines.append((name, line))
+
+
 def test_pytest_addoption_registers_cli_flags() -> None:
-    parser = MagicMock()
-    group = MagicMock()
-    parser.getgroup.return_value = group
+    group = _FakeOptionGroup()
+    parser = _FakeParser(group)
 
     pytest_addoption(parser)
 
-    parser.getgroup.assert_called_once_with(
-        "agentops-eval", "AgentOps CI/CD Evaluation Quality Gates"
-    )
-    names = [call[0][0] for call in group.addoption.call_args_list]
+    assert parser.groups_requested == [
+        ("agentops-eval", "AgentOps CI/CD Evaluation Quality Gates")
+    ]
     for flag in (
         "--eval-mode",
         "--fail-under-groundedness",
@@ -57,7 +88,7 @@ def test_pytest_addoption_registers_cli_flags() -> None:
         "--eval-project",
         "--eval-location",
     ):
-        assert flag in names
+        assert flag in group.options
 
 
 def test_mode_and_report_path_confinement(tmp_path: Path) -> None:
@@ -83,8 +114,6 @@ def test_pytest_configure_and_sessionfinish(
     tmp_path: Path, isolated_global_reporter: None
 ) -> None:
     del isolated_global_reporter
-    config = MagicMock()
-    config.rootpath = tmp_path
     opts = {
         "--eval-mode": "heuristic",
         "--fail-under-groundedness": 0.90,
@@ -95,10 +124,10 @@ def test_pytest_configure_and_sessionfinish(
         "--eval-project": "unit-proj",
         "--eval-location": "europe-west4",
     }
-    config.getoption.side_effect = lambda k, default=None: opts.get(k, default)
+    config = _FakeConfig(tmp_path, opts)
 
     pytest_configure(config)
-    assert config.addinivalue_line.call_count == 3
+    assert len(config.ini_lines) == 3
     assert session_reporter.eval_mode == "heuristic"
     assert session_reporter.default_groundedness == 0.90
 
@@ -111,8 +140,7 @@ def test_pytest_configure_and_sessionfinish(
             is_passing=True,
         )
     )
-    session = MagicMock()
-    session.config.rootpath = tmp_path
+    session = SimpleNamespace(config=SimpleNamespace(rootpath=tmp_path))
     pytest_sessionfinish(session, exitstatus=0)
     out = tmp_path / "nested" / "eval_summary.md"
     assert out.exists()

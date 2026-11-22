@@ -201,6 +201,33 @@ def grant_gcs_bucket_access(
         logger.warning("Bucket IAM update failed: %s", exc)
 
 
+_DEST_TARGETS: dict[str, tuple[bool, bool]] = {
+    "bq": (True, False),
+    "gcs": (False, True),
+    "file": (False, False),
+    "both": (True, True),
+}
+
+
+def _add_common_cli_args(
+    parser: argparse.ArgumentParser,
+    default_project: str | None,
+    default_region: str,
+    *,
+    is_subparser: bool = False,
+) -> None:
+    sup: Any = argparse.SUPPRESS
+    proj_def: Any = sup if is_subparser else default_project
+    reg_def: Any = sup if is_subparser else default_region
+    ds_def: Any = sup if is_subparser else "agentops_observability"
+    bkt_def: Any = sup if is_subparser else None
+    add = parser.add_argument
+    add("--project", "--project-id", dest="project", default=proj_def)
+    add("--region", dest="region", default=reg_def)
+    add("--dataset", "--dataset-id", dest="dataset", default=ds_def)
+    add("--bucket", "--bucket-name", dest="bucket", default=bkt_def)
+
+
 def build_cli_parser(
     default_project: str | None,
     default_region: str,
@@ -209,23 +236,34 @@ def build_cli_parser(
     parser = argparse.ArgumentParser(
         description="GCP Log Router Setup and Observability Export Utility"
     )
-    parser.add_argument("--project", default=default_project)
-    parser.add_argument("--region", default=default_region)
-    parser.add_argument("--dataset", default="agentops_observability")
-    parser.add_argument("--bucket", default=None)
+    _add_common_cli_args(parser, default_project, default_region)
     sub = parser.add_subparsers(dest="command", required=True)
     setup_cmd = sub.add_parser("setup", help="Configure BQ and GCS Log Sinks")
     setup_cmd.add_argument("--bq-sink", default="agentops-finops-llm-bq-sink")
     setup_cmd.add_argument("--gcs-sink", default="agentops-finops-llm-gcs-sink")
-    sub.add_parser("list-sinks", help="List existing Log Router sinks")
+    setup_cmd.add_argument("--dry-run", action="store_true")
+    list_cmd = sub.add_parser(
+        "list-sinks", help="List existing Log Router sinks"
+    )
     exp = sub.add_parser("export", help="Export logs to BQ/GCS/JSONL")
     exp.add_argument("--hours", type=int, default=24)
     exp.add_argument("--limit", type=int, default=500)
     exp.add_argument("--filter", default=None)
     exp.add_argument("--no-bq", action="store_true")
     exp.add_argument("--no-gcs", action="store_true")
+    exp.add_argument(
+        "--destination",
+        "--dest",
+        dest="destination",
+        choices=("bq", "gcs", "file", "both"),
+        default=None,
+    )
     exp.add_argument("--output-file", default=None)
-    sub.add_parser("verify", help="Emit synthetic test log")
+    verify_cmd = sub.add_parser("verify", help="Emit synthetic test log")
+    for sub_p in (setup_cmd, list_cmd, exp, verify_cmd):
+        _add_common_cli_args(
+            sub_p, default_project, default_region, is_subparser=True
+        )
     return parser
 
 
@@ -240,12 +278,16 @@ def dispatch_cli_command(manager: Any, args: argparse.Namespace) -> None:
         for sink in manager.list_sinks():
             print(json.dumps(sink))
     elif args.command == "export":
+        dest = str(getattr(args, "destination", "") or "")
+        target_bq, target_gcs = _DEST_TARGETS.get(
+            dest, (not args.no_bq, not args.no_gcs)
+        )
         stats = manager.export_logs(
             filter_expr=args.filter,
             hours=args.hours,
             limit=args.limit,
-            target_bq=not args.no_bq,
-            target_gcs=not args.no_gcs,
+            target_bq=target_bq,
+            target_gcs=target_gcs,
             local_output_file=args.output_file,
         )
         print(json.dumps(stats, indent=2))

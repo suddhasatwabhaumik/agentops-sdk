@@ -42,6 +42,7 @@ class InMemorySessionMemory(memory_ports.SessionMemoryPort):
     """Thread-safe in-memory implementation of SessionMemoryPort."""
 
     def __init__(self) -> None:
+        """Initializes the thread-safe in-memory session store."""
         self._lock = threading.Lock()
         self._next_id = 1
         self._sessions: dict[str, list[models.ConversationTurn]] = {}
@@ -138,6 +139,7 @@ class InMemoryLongTermMemory(memory_ports.LongTermMemoryPort):
     """Thread-safe in-memory implementation of LongTermMemoryPort."""
 
     def __init__(self) -> None:
+        """Initializes the thread-safe in-memory long-term memory store."""
         self._lock = threading.Lock()
         self._next_id = 1
         self._records: dict[
@@ -186,12 +188,20 @@ class InMemoryLongTermMemory(memory_ports.LongTermMemoryPort):
 
     @override
     def retrieve_memories(
-        self, *, user_id: str, query: str | None = None, limit: int = 5
+        self,
+        *,
+        user_id: str,
+        query: str | None = None,
+        limit: int = 5,
+        memory_type: str | None = None,
     ) -> list[models.MemoryItem]:
         valid_uid = validation.validate_user_id(user_id)
         if limit <= 0:
             raise ValueError("limit must be positive.")
         items = self._active_items(valid_uid)
+        ft = memory_type.strip() if isinstance(memory_type, str) else ""
+        if ft and ft != "all":
+            items = [it for it in items if it.memory_type == ft]
         if not query or not query.strip():
             return items[:limit]
         q_lower = query.strip().lower()
@@ -256,9 +266,16 @@ class InMemoryLongTermMemory(memory_ports.LongTermMemoryPort):
 
     @override
     async def aretrieve_memories(
-        self, *, user_id: str, query: str | None = None, limit: int = 5
+        self,
+        *,
+        user_id: str,
+        query: str | None = None,
+        limit: int = 5,
+        memory_type: str | None = None,
     ) -> list[models.MemoryItem]:
-        return self.retrieve_memories(user_id=user_id, query=query, limit=limit)
+        return self.retrieve_memories(
+            user_id=user_id, query=query, limit=limit, memory_type=memory_type
+        )
 
     @override
     async def agenerate_memories(

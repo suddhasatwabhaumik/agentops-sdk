@@ -12,8 +12,13 @@ from typing import Any
 from vertexai._genai import types as vtypes
 
 from agentops_sdk.domain import exceptions
+from agentops_sdk.evaluation import _task_runner
 from agentops_sdk.evaluation import models
 from agentops_sdk.evaluation import reporting
+
+_accepts_autorater_config = _task_runner.accepts_autorater_config
+run_eval_task_instance = _task_runner.run_eval_task_instance
+trajectory_to_vertex_row = _task_runner.trajectory_to_vertex_row
 
 _RELEVANCE_ALIASES = frozenset(
     {"question_answering_relevance", "qa_relevance", "relevance"}

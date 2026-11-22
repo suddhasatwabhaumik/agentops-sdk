@@ -32,6 +32,7 @@ class VertexAIPromptAdapter:
         *,
         client: Any | None = None,
     ) -> None:
+        """Initializes VertexAIPromptAdapter for a GCP project and region."""
         proj, loc = settings.resolve_gcp_project_and_location(
             project_id, location, require_project=client is None
         )

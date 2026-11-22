@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import datetime
 from email.message import Message
 import io
 import secrets
@@ -13,6 +14,10 @@ from typing import Any
 from urllib import request as urllib_request
 from urllib import response as urllib_response
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import rsa
+import jwt
 import pytest
 
 from agentops_sdk.domain import context as sdk_context
@@ -203,3 +208,133 @@ def test_identity_propagation_and_outer_scope_isolation(
     assert dev_only() == "dev-alice"
     monkeypatch.setenv("ENVIRONMENT", "production")
     assert dev_only() == ""
+
+
+def test_rsa_pem_public_key_and_rs256_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    priv = rsa.generate_private_key(65537, key_size=2048)
+    pub_pem = (
+        priv.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("utf-8")
+    )
+    assert _jwks.parse_rsa_public_pem(pub_pem.replace("\n", "\\n")) is not None
+
+    ec_pem = (
+        ec.generate_private_key(ec.SECP256R1())
+        .public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("utf-8")
+    )
+    for bad_pem in ("not-a-pem", "-----BEGIN PUBLIC KEY-----\nbad", ec_pem):
+        with pytest.raises(exceptions.ConfigurationError, match="Invalid RSA"):
+            _jwks.parse_rsa_public_pem(bad_pem)
+
+    monkeypatch.setattr(
+        auth.socket,
+        "getaddrinfo",
+        lambda *_a, **_kw: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 443))],
+    )
+    for kw in (
+        {"public_key": pub_pem},
+        {"public_key": pub_pem, "audience": "agentops-api"},
+        {"public_key": pub_pem, "issuer": "https://idp.example.com/v2.0"},
+        {"jwks_url": "https://idp.example.com/jwks.json", "audience": "a"},
+    ):
+        with pytest.raises(exceptions.ConfigurationError, match="RS256"):
+            JWTAuthEngine(**kw)
+
+    eng = JWTAuthEngine(
+        public_key=pub_pem,
+        audience="agentops-api",
+        issuer="https://idp.example.com/v2.0",
+    )
+    now = datetime.datetime.now(datetime.UTC)
+    exp = now + datetime.timedelta(minutes=5)
+    typeless_tok = jwt.encode(
+        {
+            "sub": "alice",
+            "aud": "agentops-api",
+            "iss": "https://idp.example.com/v2.0",
+            "exp": exp,
+        },
+        priv,
+        algorithm="RS256",
+    )
+    assert eng.decode_token(typeless_tok)["sub"] == "alice"
+
+    refresh_tok = jwt.encode(
+        {
+            "sub": "alice",
+            "aud": "agentops-api",
+            "iss": "https://idp.example.com/v2.0",
+            "exp": exp,
+            "type": "refresh",
+        },
+        priv,
+        algorithm="RS256",
+    )
+    with pytest.raises(exceptions.AuthenticationError, match="token type"):
+        eng.decode_token(refresh_tok, expected_type="access")
+
+
+def test_entra_aliases_single_tenant_issuer_and_hs256_strict_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert (
+        _jwks.build_entra_issuer("example-tenant-01")
+        == "https://login.microsoftonline.com/example-tenant-01/v2.0"
+    )
+    for bad_tid in ("", "common", "Organizations", "consumers", "../bad"):
+        with pytest.raises(exceptions.ConfigurationError, match="Entra"):
+            _jwks.build_entra_issuer(bad_tid)
+
+    priv = rsa.generate_private_key(65537, key_size=2048)
+    pub_pem = (
+        priv.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("utf-8")
+    )
+    monkeypatch.setenv("ENTRA_CLIENT_ID", "agentops-api")
+    monkeypatch.setenv("ENTRA_TENANT_ID", "example-tenant-01")
+    monkeypatch.setenv("MCP_JWT_PUBLIC_KEY", pub_pem)
+    eng = JWTAuthEngine()
+    exp = datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=5)
+    tok = jwt.encode(
+        {
+            "sub": "entra-user",
+            "aud": "agentops-api",
+            "iss": "https://login.microsoftonline.com/example-tenant-01/v2.0",
+            "exp": exp,
+        },
+        priv,
+        algorithm="RS256",
+    )
+    assert eng.decode_token(tok)["sub"] == "entra-user"
+
+    hs_key = secrets.token_hex(32)
+    hs_eng = JWTAuthEngine(
+        secret_key=hs_key, audience="agentops-api", issuer="agentops-idp"
+    )
+    hs_typeless = jwt.encode(
+        {
+            "sub": "bob",
+            "aud": "agentops-api",
+            "iss": "agentops-idp",
+            "exp": exp,
+        },
+        hs_key,
+        algorithm="HS256",
+    )
+    with pytest.raises(exceptions.AuthenticationError, match="token type"):
+        hs_eng.decode_token(hs_typeless)

@@ -38,6 +38,7 @@ class InMemoryAuditAdapter:
     """Thread-safe in-memory AuditSinkPort implementation for testing."""
 
     def __init__(self) -> None:
+        """Initializes an empty thread-safe InMemoryAuditAdapter."""
         self._lock = threading.Lock()
         self._entries: list[models.AuditLogEntry] = []
 
@@ -78,6 +79,7 @@ class CloudLoggingAuditAdapter:
         log_name: str = "agentops-audit-ledger",
         client: Any = None,
     ) -> None:
+        """Initializes CloudLoggingAuditAdapter for a project and log name."""
         self._project_id = project_id
         self._log_name = log_name
         self._client = client
@@ -120,6 +122,7 @@ class BigQueryAuditAdapter:
         client: Any = None,
         auto_create_table: bool = True,
     ) -> None:
+        """Initializes BigQueryAuditAdapter for the target audit table."""
         self._writer = _sink_helpers.PartitionedBQWriter(
             project_id, dataset_id, table_id, client, auto_create_table
         )
@@ -165,6 +168,7 @@ class LocalFileAuditAdapter:
         max_bytes: int = 10_485_760,
         backup_count: int = 5,
     ) -> None:
+        """Initializes LocalFileAuditAdapter with path and rotation limits."""
         self._lock = threading.Lock()
         self._path, self._handler, self._logger = (
             _sink_helpers.open_local_jsonl_sink(

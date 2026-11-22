@@ -70,6 +70,8 @@ class RunLedger:
     rate_limit_rejections: int = 0
     audit_entries: int = 0
     case_records: int = 0
+    memory_recalls: int = 0
+    vertex_eval_runs: int = 0
 
 
 @dataclass

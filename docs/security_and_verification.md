@@ -14,9 +14,9 @@ This document specifies the zero-trust authentication controls, SSRF defenses, s
 
 ---
 
-## 1. Zero-Trust Cryptographic Authentication (`agentops_sdk.security.auth`, `_jwks.py`, `identity.py`)
+## 1. Zero-Trust Cryptographic Authentication (`agentops_sdk.security.auth`, `_jwks.py`, `identity.py`, `pyjwt>=2.10.0`)
 
-### 1.1 Asymmetric RS256 JWKS Verification & SSRF Guard (`SafeJWKClient`)
+### 1.1 Asymmetric RS256 JWKS Verification, Static PEM & SSRF Guard (`SafeJWKClient`)
 Corporate agents and gateway clients authenticate using Microsoft Entra ID (or OIDC) `RS256` JWTs verified via `JWTAuthEngine` ([`sdk/src/agentops_sdk/security/auth.py`](../sdk/src/agentops_sdk/security/auth.py)) and `SafeJWKClient` ([`sdk/src/agentops_sdk/security/_jwks.py`](../sdk/src/agentops_sdk/security/_jwks.py)):
 
 *   **SSRF-Hardened URL Validation (`validate_jwks_url()`, `CWE-918`)**:
@@ -24,9 +24,10 @@ Corporate agents and gateway clients authenticate using Microsoft Entra ID (or O
     *   Rejects `localhost`, `*.localhost`, `*.internal`, non-`is_global` IPs, loopback, RFC 1918 private, link-local (`169.254.0.0/16`), CGNAT (`100.64.0.0/10`), multicast/reserved/unspecified addresses, and IPv4-mapped / 6to4 / Teredo IPv6 addresses.
     *   Optionally enforces an explicit hostname allowlist via `allowed_jwks_hosts` or `AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS`.
     *   Re-validates DNS resolution inside `SafeJWKClient.fetch_data()` before opening HTTPS connections (mitigating DNS rebinding) and blocks all HTTP `3xx` redirects via `_NoRedirectHandler`.
-*   **Pinned Algorithms & Mandatory Claims (`CWE-347`, `CWE-287`)**:
-    *   Pins `algorithms=("RS256",)` when `jwks_url` is configured and `algorithms=("HS256",)` for symmetric keys—rejecting `alg: none` and RS-to-HS key-confusion attacks.
-    *   Requires `exp` (verified), `aud` (when `AGENTOPS_IDENTITY__CLIENT_ID` / `audience` is set), `iss` (when `AGENTOPS_IDENTITY__ISSUER` / `issuer` is set), and `type == expected_type` (`"access"` by default, preventing refresh token misuse).
+*   **Pinned Algorithms, Static RSA PEM & Mandatory Claims (`CWE-347`, `CWE-287`)**:
+    *   Pins `algorithms=("RS256",)` when `jwks_url` or static RSA PEM `public_key` (`JWT_PUBLIC_KEY` / `MCP_JWT_PUBLIC_KEY`) is configured and `algorithms=("HS256",)` for symmetric keys—rejecting `alg: none` and RS-to-HS key-confusion attacks.
+    *   `RS256` requires mandatory `audience` and `issuer` (fail-closed if omitted). Supports Entra ID env aliases (`ENTRA_*`) with single-tenant issuer derivation and maps Entra `"tid"` -> `"tenant_id"` for downstream RLS.
+    *   Requires `exp` (verified), `aud`, `iss`, and `type == expected_type` (`"access"` by default, preventing refresh token misuse).
 
 ### 1.2 Symmetric HS256 & Fail-Closed Production Configuration (`CWE-798`)
 *   **Zero Hardcoded Fallback Secrets**: Outside development environments (`ENVIRONMENT` not in `{"dev", "development", "local", "test"}`), `JWTAuthEngine` fails closed with `ConfigurationError` if neither `jwks_url` nor `JWT_SECRET_KEY` (minimum 32 UTF-8 bytes) is configured.
@@ -51,21 +52,21 @@ Corporate agents and gateway clients authenticate using Microsoft Entra ID (or O
 
 ---
 
-## 3. SQL AST Governance & Row-Level Security (`agentops_sdk.sql`, `CWE-89`, `CWE-636`)
+## 3. SQL AST Governance & Row-Level Security (`agentops_sdk.sql`, `sqlglot>=30.0.0`, `CWE-89`, `CWE-636`)
 
 ### 3.1 Read-Only AST Guardrail (`SQLASTValidator`, `validate_sql_query`)
-[`sdk/src/agentops_sdk/sql/ast_guard.py`](../sdk/src/agentops_sdk/sql/ast_guard.py) and [`_ast_rules.py`](../sdk/src/agentops_sdk/sql/_ast_rules.py) enforce single-statement, read-only SQL invariants via `sqlglot`:
+[`sdk/src/agentops_sdk/sql/ast_guard.py`](../sdk/src/agentops_sdk/sql/ast_guard.py) and [`_ast_rules.py`](../sdk/src/agentops_sdk/sql/_ast_rules.py) enforce single-statement, read-only SQL invariants via `sqlglot>=30.0.0`:
 *   **Pure Read-Only Roots**: Accepts only single-statement `Select`, `Union`, `Intersect`, or `Except` roots; rejects multi-statement, empty, or non-string payloads.
 *   **Forbidden Nodes, TVFs & Hidden Comment DDL**: Blocks DML/DDL/DCL nodes (`Insert`, `Update`, `Delete`, `Drop`, `Alter`, `Create`, `Merge`, `TruncateTable`, `Command`, `Grant`, `Revoke`, etc.), table-valued functions (`read_csv`, etc.) except `UNNEST`, dangerous functions (`SESSION_USER`, `CURRENT_USER`, `EXTERNAL_QUERY`, `PG_READ_FILE`, `PG_SLEEP`, `DBLINK`, etc.), and DDL/DML keywords hidden inside SQL comments.
 *   **System Schema & Fail-Closed Allowlist**: Blocks `information_schema`, `pg_catalog`, `pg_toast`, `sys`, `mysql`, `performance_schema`, `system`, and `sqlite_*` system tables. `is_table_in_allowlist()` rejects empty allowlists or bare `"*"` wildcards (`CWE-636`) and anchors dataset wildcards (`dataset.*`) by exact parent prefix segment matching while excluding CTE alias self-shadowing (`collect_physical_tables`).
 *   **Decorator Coverage (`@validate_sql_query_decorator`)**: [`sql/decorators.py`](../sdk/src/agentops_sdk/sql/decorators.py) binds signature defaults (`bound.apply_defaults()`), `*args`, and `**kwargs`, ensuring every SQL string argument passes `SQLASTValidator` and tags `sql.ast.is_safe` on the active OTel span.
 
-### 3.2 Parse-Tree Row-Level Security (`RowLevelPolicyEngine`, `apply_row_level_policy`)
+### 3.2 Scope-Aware Parse-Tree Row-Level Security (`RowLevelPolicyEngine`, `apply_row_level_policy`)
 [`sdk/src/agentops_sdk/sql/rls.py`](../sdk/src/agentops_sdk/sql/rls.py) and [`_rls_helpers.py`](../sdk/src/agentops_sdk/sql/_rls_helpers.py):
-*   **Pre-Validation & Fail-Closed Parsing**: Validates SQL via `validate_sql_query()` first and fails closed with `SQLGovernanceError` on parse errors or missing tenant claims.
-*   **Role-Gated Admin Bypass**: Only `role in {"admin", "superadmin"}` bypasses RLS predicate injection; unprivileged claims with string values like `"all"` are enforced literally (`WHERE tenant_id = 'all'`).
-*   **Wrapper Unwrapping & Collision Disambiguation**: `unwrap_table_node()` recursively unwraps `Subquery`, `TableSample`, and `Paren` wrappers around physical tables; `matches_target_tables()` matches both qualified and unqualified references for targeted tables; `_build_qualified_column()` preserves schema/catalog qualification when two unaliased tables share a base name.
-*   **Compound `OR` Precedence**: Wraps pre-existing `WHERE` clauses in parentheses (`exp.Paren`) before conjoining parenthesized tenant predicates (`(a = 1 OR b = 2) AND (t.tenant_id = 'tenant-01')`).
+*   **Pre-Validation, Fail-Closed Parsing & Post-Rewrite Verification**: Validates SQL via `validate_sql_query()` first, fails closed with `SQLGovernanceError` on parse errors or missing tenant claims, and runs post-rewrite verification on the generated SQL AST.
+*   **Role-Gated Admin Bypass & Entra `"tid"` Mapping**: Only `role in {"admin", "superadmin"}` bypasses RLS predicate injection; unprivileged claims with string values like `"all"` are enforced literally (`WHERE tenant_id = 'all'`). Entra ID `"tid"` claims map cleanly to `"tenant_id"` when `tenant_id` is absent.
+*   **Scope-Aware Join, CTE & `ML.PREDICT` Handling**: Places tenant predicates inside `LEFT JOIN ... ON` clauses (preserving outer-join semantics instead of turning them into inner joins), normalizes CTE names per dialect, supports sole-`FROM` `ML.PREDICT` queries, and supports `dataset.*` target table patterns.
+*   **Unsafe Construct Rejection & Compound `OR` Precedence**: Rejects `TableFromRows`, `PIVOT`, `UNPIVOT`, and column-list aliases rather than risking filter bypass; wraps pre-existing `WHERE` clauses in parentheses (`exp.Paren`) before conjoining parenthesized tenant predicates (`(a = 1 OR b = 2) AND (t.tenant_id = 'tenant-01')`).
 
 ---
 
@@ -82,7 +83,7 @@ Corporate agents and gateway clients authenticate using Microsoft Entra ID (or O
 *   **No LLM-Exposed `auth_token` Parameter (`CWE-288`)**: `query_database_tool`, `query_databricks_tool`, and `query_feature_store_tool` omit `auth_token` from tool schemas; HTTP bearer tokens are bound per request via ASGI `HeaderBindingMiddleware` or `ExecutionScope`. `MCP_AUTH_TOKEN` server fallback is removed.
 *   **Fail-Closed Auth & Pre-Oracle Ordering (`CWE-306`, `CWE-203`)**: `MCP_REQUIRE_AUTH` defaults to `"true"`. `authorize_query()` verifies the caller's JWT *before* running `SQLASTValidator` (`MCP_ALLOWED_TABLES`) and `RowLevelPolicyEngine`, preventing unauthenticated table-existence enumeration.
 *   **Tenant-Scoped Feature Store (`CWE-284`)**: `authorize_feature_store_tenant()` validates `MCP_ALLOWED_ENTITY_TYPES`, `tenant_id` (or `tid`), `allowed_entity_types`, `allowed_entity_ids`, and rejects cross-tenant `tenant:entity_id` keys.
-*   **Transport & Container Hardening (`CWE-319`)**: `get_connector_api_url()` requires `https://` for non-loopback `CONNECTOR_API_URL` targets unless `ALLOW_INSECURE_CONNECTOR_HTTP=true`; `MCP_HOST` defaults to `127.0.0.1`. [`mcp_servers/Dockerfile`](../mcp_servers/Dockerfile) builds from repo root under non-root `mcpuser`.
+*   **Transport, Capacity & Container Hardening (`CWE-319`)**: `get_connector_api_url()` requires `https://` for non-loopback `CONNECTOR_API_URL` targets unless `ALLOW_INSECURE_CONNECTOR_HTTP=true`; `MCP_HOST` defaults to `127.0.0.1`. `configure_telemetry()` uses non-blocking `BatchSpanProcessor` + `MeterProvider` (`PeriodicExportingMetricReader`), `logger = logging.getLogger(__name__)`, per-loop `AsyncRateLimiter` `WeakKeyDictionary` lock isolation, and `RateLimiterCore` `threading.Lock`. [`mcp_servers/Dockerfile`](../mcp_servers/Dockerfile) builds from repo root under non-root `mcpuser`.
 
 ---
 
@@ -114,4 +115,7 @@ pytest -v \
   tests/unit/test_mcp_server.py \
   tests/contract/test_security_contract.py \
   --eval-mode=in_memory
+
+# Run gateway security & telemetry batching E2E suite
+bash tests/e2e_remediate_gateway_security/run_all_remediate_gateway_security_tests.sh
 ```

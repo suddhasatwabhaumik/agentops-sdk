@@ -140,7 +140,7 @@ Hardcoding pricing tables inside client runtimes leads to drift across model SKU
   "agentops.project.name": "inventory-advisor",
   "agentops.environment": "prod",
   "agentops.session.id": "sess-89412",
-  "agentops.user.id": "dealer-4711",
+  "agentops.user.id": "UNIT-001",
   "trace_id": "9dcef5c0c089279e5efef1496eb2e7d6",
   "span_id": "f51d95c940e6ef61",
   "timestamp": "2026-11-18T12:00:00Z"

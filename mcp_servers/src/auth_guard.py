@@ -25,9 +25,16 @@ _HEADERS_CTX: contextvars.ContextVar[Mapping[str, str] | None] = (
 )
 _JWT_CONFIG_KEYS = (
     "AGENTOPS_IDENTITY__JWKS_URL",
+    "ENTRA_JWKS_URL",
     "JWT_SECRET_KEY",
+    "JWT_PUBLIC_KEY",
+    "MCP_JWT_PUBLIC_KEY",
     "AGENTOPS_IDENTITY__CLIENT_ID",
+    "ENTRA_CLIENT_ID",
     "AGENTOPS_IDENTITY__ISSUER",
+    "ENTRA_ISSUER",
+    "AGENTOPS_IDENTITY__TENANT_ID",
+    "ENTRA_TENANT_ID",
     "AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS",
 )
 _MAX_ENGINE_CACHE_SIZE = 16
@@ -36,7 +43,7 @@ _JWT_ENGINE_CACHE: dict[tuple[str, ...], auth.JWTAuthEngine] = {}
 
 
 def _jwt_config_key() -> tuple[str, ...]:
-    env_mode = os.getenv("ENVIRONMENT", "development").strip().lower()
+    env_mode = os.getenv("ENVIRONMENT", "").strip().lower()
     return (*(os.getenv(k, "").strip() for k in _JWT_CONFIG_KEYS), env_mode)
 
 
@@ -60,9 +67,7 @@ def clear_jwt_engine_cache() -> None:
 
 
 @contextlib.contextmanager
-def bind_request_headers(
-    headers: Mapping[str, str] | None,
-) -> Iterator[None]:
+def bind_request_headers(headers: Mapping[str, str] | None) -> Iterator[None]:
     """Binds incoming HTTP request headers for the active call scope."""
     token = _HEADERS_CTX.set(dict(headers) if headers else None)
     try:
@@ -160,9 +165,7 @@ def authorize_query(
     claims, out_headers = authenticate_caller(
         token=token, headers=headers, jwt_engine=jwt_engine
     )
-    tables = (
-        allowed_tables if allowed_tables is not None else get_allowed_tables()
-    )
+    tables = get_allowed_tables() if allowed_tables is None else allowed_tables
     validation = ast_guard.validate_sql_query(
         query, dialect=dialect, allowed_tables=tables
     )
@@ -172,6 +175,8 @@ def authorize_query(
         )
     sql = validation.sanitized_sql
     if claims is not None:
+        if "tenant_id" not in claims and "tid" in claims:
+            claims = {**claims, "tenant_id": claims["tid"]}
         sql = rls.apply_row_level_policy(sql, claims, dialect=dialect)
     return sql, out_headers
 
@@ -195,6 +200,8 @@ def validate_and_authorize_sql(
             headers=headers,
             jwt_engine=jwt_engine,
         )
+    except exceptions.ConfigurationError as exc:
+        return False, f"Configuration Error: {exc}", {}
     except exceptions.AuthenticationError as exc:
         return False, f"Authentication Failure: {exc}", {}
     except exceptions.SQLGovernanceError as exc:
@@ -205,18 +212,12 @@ def validate_and_authorize_sql(
 def _coerce_claim_strings(raw: Any, claim_name: str) -> set[str]:
     if isinstance(raw, str):
         return {raw}
-    if isinstance(raw, bytes | bytearray) or not isinstance(
-        raw, Sequence | set | frozenset
-    ):
+    seq_types = (Sequence, set, frozenset)
+    if isinstance(raw, bytes | bytearray) or not isinstance(raw, seq_types):
         raise exceptions.AuthenticationError(f"Malformed {claim_name} claim.")
-    result: set[str] = set()
-    for item in raw:
-        if not isinstance(item, str):
-            raise exceptions.AuthenticationError(
-                f"Malformed {claim_name} claim."
-            )
-        result.add(item)
-    return result
+    if not all(isinstance(item, str) for item in raw):
+        raise exceptions.AuthenticationError(f"Malformed {claim_name} claim.")
+    return set(raw)
 
 
 def _check_entity_scope(
@@ -225,17 +226,15 @@ def _check_entity_scope(
     claims: Mapping[str, Any],
     tenant_id: str,
 ) -> None:
-    allowed_types = claims.get("allowed_entity_types")
-    if allowed_types is not None:
-        types_set = _coerce_claim_strings(allowed_types, "allowed_entity_types")
-        if entity_type not in types_set:
-            raise exceptions.AuthenticationError(
-                f"Entity type {entity_type!r} outside tenant scope."
-            )
-    allowed_ids = claims.get("allowed_entity_ids")
-    if allowed_ids is not None:
-        ids_set = _coerce_claim_strings(allowed_ids, "allowed_entity_ids")
-        if any(eid not in ids_set for eid in entity_ids):
+    if (raw_t := claims.get("allowed_entity_types")) is not None and (
+        entity_type not in _coerce_claim_strings(raw_t, "allowed_entity_types")
+    ):
+        raise exceptions.AuthenticationError(
+            f"Entity type {entity_type!r} outside tenant scope."
+        )
+    if (raw_i := claims.get("allowed_entity_ids")) is not None:
+        allowed_ids = _coerce_claim_strings(raw_i, "allowed_entity_ids")
+        if any(eid not in allowed_ids for eid in entity_ids):
             raise exceptions.AuthenticationError(
                 "entity_ids outside tenant scope."
             )
@@ -261,6 +260,17 @@ def _validate_feature_lookup_inputs(
     return clean_type
 
 
+def _extract_tenant_claim(claims: Mapping[str, Any]) -> str:
+    raw = claims.get("tenant_id")
+    if raw is None:
+        raw = claims.get("tid")
+    if raw is None:
+        return ""
+    if isinstance(raw, bool) or not isinstance(raw, str | int | float):
+        raise exceptions.AuthenticationError("Malformed tenant_id claim.")
+    return str(raw).strip()
+
+
 def authorize_feature_store_tenant(
     entity_type: str,
     entity_ids: Sequence[str],
@@ -276,8 +286,9 @@ def authorize_feature_store_tenant(
         )
     if claims is None:
         return None
-    role = str(claims.get("role", "")).strip().lower()
-    tenant_id = str(claims.get("tenant_id") or claims.get("tid") or "").strip()
+    raw_r = claims.get("role")
+    role = raw_r.strip().lower() if isinstance(raw_r, str) else ""
+    tenant_id = _extract_tenant_claim(claims)
     if role in _ADMIN_ROLES:
         return tenant_id or None
     if not tenant_id:

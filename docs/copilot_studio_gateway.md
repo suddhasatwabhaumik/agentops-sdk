@@ -167,8 +167,9 @@ Connecting Microsoft Copilot Studio (Azure SaaS) with GCP-hosted Cloud Run servi
 
 ### Ingress & Egress Perimeter
 1.  **Cross-Cloud Interconnect**: Traffic traverses Azure ExpressRoute + GCP Partner Interconnect (or HA Cloud VPN) into an Internal Application Load Balancer (ILB). Cloud Run is configured with `--ingress=internal-and-cloud-load-balancing`.
-2.  **JWT Verification & RLS**: The Gateway validates Entra ID RS256 tokens via `JWTAuthEngine` + `SafeJWKClient` (`validate_jwks_url` SSRF protection) and enforces `RowLevelPolicyEngine` before querying downstream data sources.
-3.  **Private Google Access & Direct VPC Egress**: Calls to Cloud SQL, BigQuery, Model Armor, Cloud DLP, and Vertex AI route through Private Google Access / Serverless VPC Access without public internet transit.
+2.  **JWT Verification, Entra Aliases & RLS (`pyjwt>=2.10.0`, `sqlglot>=30.0.0`)**: The Gateway validates Entra ID `RS256` tokens via `JWTAuthEngine` (`audience` + `issuer` mandatory, supporting `ENTRA_*` single-tenant issuer derivation, static `JWT_PUBLIC_KEY`/`MCP_JWT_PUBLIC_KEY` PEM, and `SafeJWKClient` SSRF protection) and maps `"tid"` -> `"tenant_id"` for scope-aware `RowLevelPolicyEngine` enforcement before querying downstream data sources.
+3.  **Gateway Telemetry Batching & Concurrency**: `configure_telemetry()` initializes non-blocking `BatchSpanProcessor` + `MeterProvider` (`PeriodicExportingMetricReader`), while `AsyncRateLimiter` isolates `asyncio.Lock` per event loop (`weakref.WeakKeyDictionary`).
+4.  **Private Google Access & Direct VPC Egress**: Calls to Cloud SQL, BigQuery, Model Armor, Cloud DLP, and Vertex AI route through Private Google Access / Serverless VPC Access without public internet transit.
 
 ---
 

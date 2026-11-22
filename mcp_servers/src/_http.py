@@ -129,13 +129,10 @@ def attach_header_middleware(asgi_app: Any) -> Any:
 
 def build_http_asgi_app(server: Any, transport: str) -> Any | None:
     """Builds the HTTP ASGI app for SSE or streamable-HTTP transports."""
-    attr = (
-        "sse_app"
-        if transport == "sse"
-        else "streamable_http_app"
-        if transport == "streamable-http"
-        else None
-    )
+    attr = {
+        "sse": "sse_app",
+        "streamable-http": "streamable_http_app",
+    }.get(transport)
     if attr is None:
         return None
     factory = getattr(server, attr, None)

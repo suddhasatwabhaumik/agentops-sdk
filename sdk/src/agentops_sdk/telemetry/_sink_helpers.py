@@ -58,19 +58,21 @@ def _get_cloud_logging_client(project_id: str | None) -> Any:
     return cli
 
 
+def _secure_opener(path: str, flags: int) -> int:
+    del flags
+    fd = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+        0o600,
+    )
+    os.fchmod(fd, 0o600)
+    return fd
+
+
 class _SecureRotatingFileHandler(log_handlers.RotatingFileHandler):
     """RotatingFileHandler enforcing O_NOFOLLOW, 0o600, and OSError raise."""
 
-    @staticmethod
-    def _secure_opener(path: str, flags: int) -> int:
-        del flags
-        fd = os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-            0o600,
-        )
-        os.fchmod(fd, 0o600)
-        return fd
+    _secure_opener = staticmethod(_secure_opener)
 
     @override
     def _open(self) -> Any:
@@ -79,7 +81,7 @@ class _SecureRotatingFileHandler(log_handlers.RotatingFileHandler):
             self.mode,
             encoding=self.encoding,
             errors=self.errors,
-            opener=self._secure_opener,
+            opener=_secure_opener,
         )
 
     @override

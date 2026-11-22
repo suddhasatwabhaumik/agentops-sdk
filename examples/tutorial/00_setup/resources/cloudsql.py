@@ -66,7 +66,21 @@ def _ensure_database(project: str) -> None:
         )
 
 
-def _reset_user_password(project: str) -> str:
+def _ensure_user(project: str) -> tuple[str, str]:
+    probe = _gcloud(
+        "sql",
+        "users",
+        "describe",
+        USER,
+        f"--instance={INSTANCE}",
+        f"--project={project}",
+        check=False,
+    )
+    if probe.returncode == 0:
+        return (
+            "<existing password, unchanged>",
+            "  Note: existing user preserved; password was not rotated.",
+        )
     password = secrets.token_urlsafe(18)
     _gcloud(
         "sql",
@@ -76,25 +90,18 @@ def _reset_user_password(project: str) -> str:
         f"--instance={INSTANCE}",
         f"--project={project}",
         f"--password={password}",
-        check=False,
     )
-    _gcloud(
-        "sql",
-        "users",
-        "set-password",
-        USER,
-        f"--instance={INSTANCE}",
-        f"--project={project}",
-        f"--password={password}",
+    return (
+        password,
+        "  Note: created user with generated password; save it now.",
     )
-    return password
 
 
 def ensure(project: str, location: str) -> str:
     """Provision Cloud SQL instance, database, and tutorial user."""
     _ensure_instance(project, location)
     _ensure_database(project)
-    password = _reset_user_password(project)
+    password, note = _ensure_user(project)
     conn = _gcloud(
         "sql",
         "instances",
@@ -105,6 +112,7 @@ def ensure(project: str, location: str) -> str:
     ).stdout.strip()
     return (
         f"instance {conn} ready.\n"
+        f"{note}\n"
         f"  Put in .env: DATABASE_URL=postgresql+psycopg2://{USER}:{password}"
         f"@127.0.0.1:5434/{DATABASE}\n"
         f"  Run the proxy:  cloud-sql-proxy --port 5434 {conn}"

@@ -6,11 +6,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
 from typing import Any, Literal
 
 import pydantic
 
 _DEFAULT_EVAL_METRICS = ("groundedness", "question_answering_quality")
+
+
+def _default_judge_model() -> str:
+    for var in ("AGENTOPS_EVAL_AUTORATER_MODEL", "AGENTOPS_EVAL_JUDGE_MODEL"):
+        val = (os.getenv(var) or "").strip()
+        if val:
+            return val
+    return "gemini-3.8-flash"
 
 
 class CustomRubricMetric(pydantic.BaseModel):
@@ -36,7 +45,7 @@ class VertexAIEvalConfig(pydantic.BaseModel):
     project_id: str | None = None
     location: str | None = None
     judge_location: str = "global"
-    judge_model: str = "gemini-2.5-flash"
+    judge_model: str = pydantic.Field(default_factory=_default_judge_model)
     experiment: str | None = None
     experiment_run_name: str | None = None
     output_uri_prefix: str | None = None

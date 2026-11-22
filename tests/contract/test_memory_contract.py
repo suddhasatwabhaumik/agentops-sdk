@@ -276,3 +276,88 @@ def test_vertex_memory_bank_wire_scope_contract() -> None:
         "filter": 'scope.user_id="alice"',
         "force": True,
     }
+
+
+def test_long_term_memory_type_filtering_sync(
+    long_term_adapter: memory_ports.LongTermMemoryPort,
+) -> None:
+    long_term_adapter.create_memory(
+        "Prefers Series-900", user_id="u-mt", memory_type="preference"
+    )
+    long_term_adapter.create_memory(
+        "Uses UNIT-001", user_id="u-mt", memory_type="fact"
+    )
+
+    prefs = long_term_adapter.retrieve_memories(
+        user_id="u-mt", memory_type="preference", limit=10
+    )
+    assert [m.fact for m in prefs] == ["Prefers Series-900"]
+
+    all_explicit = long_term_adapter.retrieve_memories(
+        user_id="u-mt", memory_type="all", limit=10
+    )
+    assert {m.fact for m in all_explicit} == {
+        "Prefers Series-900",
+        "Uses UNIT-001",
+    }
+
+    all_none = long_term_adapter.retrieve_memories(
+        user_id="u-mt", memory_type=None, limit=10
+    )
+    assert {m.fact for m in all_none} == {
+        "Prefers Series-900",
+        "Uses UNIT-001",
+    }
+
+
+async def test_long_term_memory_type_filtering_async(
+    long_term_adapter: memory_ports.LongTermMemoryPort,
+) -> None:
+    await long_term_adapter.acreate_memory(
+        "Prefers Series-900", user_id="u-mt-a", memory_type="preference"
+    )
+    await long_term_adapter.acreate_memory(
+        "Uses UNIT-001", user_id="u-mt-a", memory_type="fact"
+    )
+
+    prefs = await long_term_adapter.aretrieve_memories(
+        user_id="u-mt-a", memory_type="preference", limit=10
+    )
+    assert [m.fact for m in prefs] == ["Prefers Series-900"]
+
+    all_explicit = await long_term_adapter.aretrieve_memories(
+        user_id="u-mt-a", memory_type="all", limit=10
+    )
+    assert {m.fact for m in all_explicit} == {
+        "Prefers Series-900",
+        "Uses UNIT-001",
+    }
+
+    all_none = await long_term_adapter.aretrieve_memories(
+        user_id="u-mt-a", memory_type=None, limit=10
+    )
+    assert {m.fact for m in all_none} == {
+        "Prefers Series-900",
+        "Uses UNIT-001",
+    }
+
+
+def test_vertex_memory_bank_bounded_overfetch_on_memory_type() -> None:
+    fake_api = _FakeMemoriesAPI()
+    client = SimpleNamespace(agent_engines=SimpleNamespace(memories=fake_api))
+    bank = VertexMemoryBank(_ENGINE, client=client)
+    bank.create_memory(
+        "Prefers Series-900", user_id="bob", memory_type="preference"
+    )
+    bank.retrieve_memories(user_id="bob", limit=2, memory_type="preference")
+    bank.retrieve_memories(
+        user_id="bob", query="Series-900", limit=10, memory_type="preference"
+    )
+    bank.retrieve_memories(user_id="bob", limit=50, memory_type="preference")
+    bank.retrieve_memories(user_id="bob", limit=2, memory_type="all")
+
+    ret_calls = [kw for op, kw in fake_api.calls if op == "retrieve"]
+    assert ret_calls[0]["simple_retrieval_params"]["page_size"] == 20
+    assert ret_calls[1]["similarity_search_params"]["top_k"] == 40
+    assert ret_calls[2]["simple_retrieval_params"]["page_size"] == 100
+    assert ret_calls[3]["simple_retrieval_params"]["page_size"] == 2

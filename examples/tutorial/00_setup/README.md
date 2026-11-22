@@ -10,10 +10,10 @@ Two standalone setup scripts (no SDK calls):
 ```
 preflight.py ──► ADC identity ──► testIamPermissions, serviceusage, GET on each resource ──► READY / BLOCKED table
 provision.py ──► resources/apis.py           serviceusage :enable
-             ──► resources/bigquery_table.py google-cloud-bigquery (agentops_tutorial.dealer_stock, 5 rows)
+             ──► resources/bigquery_table.py google-cloud-bigquery (agentops_tutorial.inventory_stock, 5 rows)
              ──► resources/model_armor.py    GET verifies centrally provisioned agentops-input-guard / -output-guard
              ──► resources/agent_engine.py   vertexai.Client().agent_engines.create(context_spec.memory_bank_config)
-             ──► resources/cloudsql.py       gcloud sql instances / databases / users
+             ──► resources/cloudsql.py       gcloud sql instances / databases / users (_ensure_user preserves existing passwords)
 ```
 
 ## Run
@@ -27,7 +27,7 @@ python examples/tutorial/00_setup/provision.py all           # remaining steps r
 
 - Model Armor templates (`agentops-input-guard` and `agentops-output-guard`) are provisioned via central infrastructure IaC; `provision.py model-armor` verifies access (`roles/modelarmor.viewer` / `roles/modelarmor.user`).
 - After `agent-engine`, copy the printed resource name into `MEMORY_BANK_NAME` in `.env`.
-- After `cloudsql`, copy the printed `DATABASE_URL` into `.env` and start the Cloud SQL Auth Proxy on `127.0.0.1:5434`.
+- After `cloudsql`, copy the printed `DATABASE_URL` into `.env` and start the Cloud SQL Auth Proxy on `127.0.0.1:5434`. Re-running `provision.py cloudsql` is idempotent: `_ensure_user` preserves an existing user's password rather than rotating it unexpectedly.
 
 ## Why resources stay up
 

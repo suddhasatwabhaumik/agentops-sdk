@@ -7,9 +7,9 @@ question + context ──► Gemini ──► response
                                     │
 evaluate_agent_response(dataset, thresholds={"groundedness": 0.8, ...}, evaluator=VertexEvalTaskAdapter(config))
                                     │
-                     Vertex AI EvalTask (global judge_model="gemini-2.5-flash") ──► 0.0..1.0 normalized scores
+                     Vertex AI EvalTask (global judge_model="gemini-3.8-flash") ──► 0.0..1.0 normalized scores
                                     │                                             └─► Vertex AI Experiments run
-                     EvaluationResult(is_passing, scores, failed_metrics, explanations, console_url)
+                     EvaluationResult(is_passing, scores, raw_scores, failed_metrics, explanations, console_url)
 pytest: assert_quality_gate(...) raises QualityGateError when thresholds fail
 ```
 
@@ -17,9 +17,9 @@ pytest: assert_quality_gate(...) raises QualityGateError when thresholds fail
 
 | Call | What it does |
 |---|---|
-| `VertexAIEvalConfig(project_id, location, experiment, experiment_run_name, judge_location="global", judge_model="gemini-2.5-flash")` | Configures `VertexEvalTaskAdapter` and experiment tracking |
+| `VertexAIEvalConfig(project_id, location, experiment, experiment_run_name, judge_location="global", judge_model="gemini-3.8-flash")` | Configures `VertexEvalTaskAdapter` (`AGENTOPS_EVAL_AUTORATER_MODEL`, full publisher URI + `judge_location="global"`), routing `AutoraterConfig` via preview when needed (warning when unsupported) |
 | `VertexEvalTaskAdapter(config=eval_cfg)` | `EvaluatorPort` adapter wrapping Vertex AI `EvalTask` (raises `EvaluationError` on empty inputs or service failures—zero silent `0.0` masking) |
-| `evaluate_agent_response(dataset, *, thresholds=..., evaluator=..., run_name=...)` | Evaluates one or more `{prompt, context, response}` items into an `EvaluationResult` |
+| `evaluate_agent_response(dataset, *, thresholds=..., evaluator=..., run_name=...)` | Evaluates one or more `{prompt, context, response}` items into an `EvaluationResult` (automatically populating `explanations`, `raw_scores`, and `console_url`) |
 | `assert_quality_gate(dataset, thresholds=..., ...)` | Evaluates and raises `QualityGateError` if any metric falls below threshold; respects pytest `--eval-mode` |
 | `evaluate_agent_trajectory` / `assert_trajectory_quality_gate` | Multi-turn tool-use trajectory evaluation (`[]` raises `EvaluationError`) |
 | `InMemoryEvaluator`, `HeuristicEvaluator` | Explicit offline evaluators (`--eval-mode=in_memory` / `heuristic`) for fast CI unit suites |
@@ -28,7 +28,7 @@ pytest: assert_quality_gate(...) raises QualityGateError when thresholds fail
 
 | Resource | Why | Access needed |
 |---|---|---|
-| Vertex AI Gen AI Evaluation (`location` for experiments, `judge_location="global"` for `gemini-2.5-flash`) | Autorater scoring | `roles/aiplatform.user` |
+| Vertex AI Gen AI Evaluation (`location` for experiments, `judge_location="global"` for `gemini-3.8-flash`) | Autorater scoring | `roles/aiplatform.user` |
 | Vertex AI Experiments (`agentops-tutorial-eval`) | Logs evaluation runs | `roles/aiplatform.user` |
 | Vertex AI, Gemini | Produces candidate responses | `roles/aiplatform.user` |
 

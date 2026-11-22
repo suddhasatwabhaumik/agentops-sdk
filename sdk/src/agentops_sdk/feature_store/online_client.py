@@ -37,6 +37,7 @@ class FeatureStoreOnlineClient:
         data_client_factory: Any | None = None,
         timeout_seconds: float = 10.0,
     ) -> None:
+        """Initializes FeatureStoreOnlineClient for online feature reads."""
         proj, loc = settings.resolve_gcp_project_and_location(
             project_id, location, require_project=True
         )

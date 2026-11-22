@@ -29,6 +29,7 @@ class AuditLedger:
     """Async and sync compliance audit facade backed by an AuditSinkPort."""
 
     def __init__(self, sink: audit_ports.AuditSinkPort | None = None) -> None:
+        """Initializes AuditLedger with an optional AuditSinkPort."""
         self._sink: audit_ports.AuditSinkPort = (
             sink if sink is not None else sinks.CloudLoggingAuditAdapter()
         )

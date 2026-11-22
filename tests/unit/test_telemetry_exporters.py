@@ -72,6 +72,7 @@ def test_local_file_telemetry_exporter_oserror_and_close(
         orig_stream = exp._handler.stream
         bad_stream = SimpleNamespace(
             tell=lambda: 0,
+            seek=lambda *_a: 0,
             write=lambda *_a: (_ for _ in ()).throw(OSError("io fail")),
             flush=lambda: None,
             close=orig_stream.close,

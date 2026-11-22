@@ -29,6 +29,7 @@ class FeatureStoreAdminClient:
         *,
         admin_client: Any | None = None,
     ) -> None:
+        """Initializes FeatureStoreAdminClient for a GCP project and region."""
         proj, loc = settings.resolve_gcp_project_and_location(
             project_id, location, require_project=True
         )

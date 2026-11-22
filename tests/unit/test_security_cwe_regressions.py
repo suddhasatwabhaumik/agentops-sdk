@@ -216,7 +216,11 @@ def test_cwe_jwt_alg_confusion_claims_and_expiry(
         "getaddrinfo",
         lambda *_a, **_kw: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 443))],
     )
-    rs_eng = JWTAuthEngine(jwks_url="https://idp.example.com/jwks.json")
+    rs_eng = JWTAuthEngine(
+        jwks_url="https://idp.example.com/jwks.json",
+        audience="agentops-app",
+        issuer="agentops-iss",
+    )
     rs_eng._jwks_client = SimpleNamespace(  # type: ignore[assignment]
         get_signing_key_from_jwt=lambda _t: SimpleNamespace(key=pub)
     )

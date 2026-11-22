@@ -29,8 +29,13 @@ _MIN_HS256_SECRET_BYTES = 32
 _DEV_ENVIRONMENTS = frozenset({"dev", "development", "local", "test"})
 _EPHEMERAL_LOCK = threading.Lock()
 _EPHEMERAL_DEV_SECRET: list[str] = []
+_RS256_REQ_MSG = (
+    "RS256 JWT validation requires both audience and issuer to be configured."
+)
 
 validate_jwks_url = _jwks.validate_jwks_url
+_clean_opt = _jwks.clean_opt
+_first_env = _jwks.first_env
 
 
 def _get_ephemeral_dev_secret() -> str:
@@ -40,19 +45,14 @@ def _get_ephemeral_dev_secret() -> str:
         return _EPHEMERAL_DEV_SECRET[0]
 
 
-def _opt_str(
-    val: str | None, env_key: str, *, arg_wins: bool = False
-) -> str | None:
-    if arg_wins and val is not None:
-        return val.strip() or None
-    return (val or os.getenv(env_key) or "").strip() or None
-
-
-def _require_non_blank_if_given(value: str | None, field_name: str) -> None:
-    if value is not None and not value.strip():
-        raise exceptions.ConfigurationError(
-            f"{field_name} must be a non-empty string when provided."
-        )
+def _resolve_issuer(explicit: str | None) -> str | None:
+    if explicit is not None:
+        return explicit
+    env_iss = _first_env("AGENTOPS_IDENTITY__ISSUER", "ENTRA_ISSUER")
+    if env_iss is not None:
+        return env_iss
+    tenant = _first_env("AGENTOPS_IDENTITY__TENANT_ID", "ENTRA_TENANT_ID")
+    return _jwks.build_entra_issuer(tenant) if tenant is not None else None
 
 
 class JWTAuthEngine:
@@ -63,49 +63,66 @@ class JWTAuthEngine:
         *,
         secret_key: str | None = None,
         jwks_url: str | None = None,
+        public_key: str | None = None,
         audience: str | None = None,
         issuer: str | None = None,
         allowed_jwks_hosts: Sequence[str] | None = None,
         access_ttl_seconds: int = 900,
         refresh_ttl_seconds: int = 604_800,
     ) -> None:
-        _require_non_blank_if_given(secret_key, "secret_key")
-        _require_non_blank_if_given(jwks_url, "jwks_url")
-        _require_non_blank_if_given(audience, "audience")
-        _require_non_blank_if_given(issuer, "issuer")
-        clean_sec = (secret_key or "").strip() or None
-        resolved_jwks = (
-            _opt_str(jwks_url, "AGENTOPS_IDENTITY__JWKS_URL")
-            if jwks_url is not None or clean_sec is None
-            else None
+        clean_sec = _clean_opt(secret_key, "secret_key")
+        clean_jwks = _clean_opt(jwks_url, "jwks_url")
+        clean_pub = _clean_opt(public_key, "public_key")
+        self._audience = _clean_opt(audience, "audience") or _first_env(
+            "AGENTOPS_IDENTITY__CLIENT_ID", "ENTRA_CLIENT_ID"
         )
-        resolved_sec = clean_sec or _opt_str(None, "JWT_SECRET_KEY")
-        self._audience = _opt_str(
-            audience, "AGENTOPS_IDENTITY__CLIENT_ID", arg_wins=True
-        )
-        self._issuer = _opt_str(
-            issuer, "AGENTOPS_IDENTITY__ISSUER", arg_wins=True
-        )
+        self._issuer = _resolve_issuer(_clean_opt(issuer, "issuer"))
         self._access_ttl = access_ttl_seconds
         self._refresh_ttl = refresh_ttl_seconds
-        self._configure_keys(resolved_jwks, resolved_sec, allowed_jwks_hosts)
+        self._jwks_client: jwt.PyJWKClient | None = None
+        self._public_key: Any = None
+        self._secret_key: str | None = None
+        self._algorithms: tuple[str, ...] = ("HS256",)
+        self._init_keys(clean_jwks, clean_sec, clean_pub, allowed_jwks_hosts)
 
-    def _configure_keys(
+    def _init_keys(
         self,
         jwks_url: str | None,
         secret_key: str | None,
+        public_key: str | None,
         allowed: Sequence[str] | None,
     ) -> None:
-        if jwks_url is not None:
-            valid = validate_jwks_url(jwks_url, allowed_hosts=allowed)
-            self._jwks_client: jwt.PyJWKClient | None = _jwks.SafeJWKClient(
+        resolved_jwks = jwks_url or (
+            _first_env("AGENTOPS_IDENTITY__JWKS_URL", "ENTRA_JWKS_URL")
+            if secret_key is None and public_key is None
+            else None
+        )
+        if resolved_jwks is not None:
+            if not self._audience or not self._issuer:
+                raise exceptions.ConfigurationError(_RS256_REQ_MSG)
+            valid = validate_jwks_url(resolved_jwks, allowed_hosts=allowed)
+            self._jwks_client = _jwks.SafeJWKClient(
                 valid, allowed_hosts=allowed
             )
-            self._algorithms: tuple[str, ...] = ("RS256",)
-            self._secret_key: str | None = None
+            self._algorithms = ("RS256",)
             return
-        self._jwks_client = None
-        self._algorithms = ("HS256",)
+        resolved_sec = secret_key or (
+            _first_env("JWT_SECRET_KEY") if public_key is None else None
+        )
+        resolved_pub = public_key or (
+            _first_env("JWT_PUBLIC_KEY", "MCP_JWT_PUBLIC_KEY")
+            if resolved_sec is None
+            else None
+        )
+        if resolved_pub is not None:
+            if not self._audience or not self._issuer:
+                raise exceptions.ConfigurationError(_RS256_REQ_MSG)
+            self._public_key = _jwks.parse_rsa_public_pem(resolved_pub)
+            self._algorithms = ("RS256",)
+            return
+        self._configure_hs256(resolved_sec)
+
+    def _configure_hs256(self, secret_key: str | None) -> None:
         env = os.getenv("ENVIRONMENT", "").strip().lower()
         is_dev = env in _DEV_ENVIRONMENTS
         if secret_key:
@@ -150,8 +167,19 @@ class JWTAuthEngine:
         """Creates a signed refresh JWT."""
         return self._mint(claims, "refresh", ttl_seconds or self._refresh_ttl)
 
+    def _resolve_decode_key(self, raw: str, override_key: Any) -> Any:
+        if override_key is not None:
+            return override_key
+        if self._jwks_client is not None:
+            return self._jwks_client.get_signing_key_from_jwt(raw).key
+        return self._public_key or self._secret_key
+
     def decode_token(
-        self, token: str, *, expected_type: str = "access"
+        self,
+        token: str,
+        *,
+        expected_type: str = "access",
+        public_key: str | None = None,
     ) -> dict[str, Any]:
         """Verifies JWT signature, expiry, type, issuer, and audience."""
         if not isinstance(expected_type, str) or not expected_type.strip():
@@ -159,33 +187,29 @@ class JWTAuthEngine:
                 "expected_type must be a non-empty string."
             )
         expected_clean = expected_type.strip()
+        clean_pub = _clean_opt(public_key, "public_key")
+        override = _jwks.parse_rsa_public_pem(clean_pub) if clean_pub else None
+        algs = ("RS256",) if override is not None else self._algorithms
+        if algs == ("RS256",) and (not self._audience or not self._issuer):
+            raise exceptions.ConfigurationError(_RS256_REQ_MSG)
         raw = token.strip()
         raw = raw[7:].strip() if raw.lower().startswith("bearer ") else raw
         if not raw:
             raise exceptions.AuthenticationError("JWT token must not be empty.")
-        req = ["exp"] + (["aud"] if self._audience else [])
-        if self._issuer:
-            req.append("iss")
+        opts = _jwks.build_decode_options(algs, self._audience, self._issuer)
         try:
-            key: Any = (
-                self._jwks_client.get_signing_key_from_jwt(raw).key
-                if self._jwks_client is not None
-                else self._secret_key
-            )
+            key = self._resolve_decode_key(raw, override)
             decoded: dict[str, Any] = jwt.decode(
                 raw,
                 key,
-                algorithms=list(self._algorithms),
+                algorithms=list(algs),
                 audience=self._audience,
                 issuer=self._issuer,
-                options={"require": req, "verify_exp": True},
+                options=opts,
             )
         except jwt.PyJWTError as exc:
             raise exceptions.AuthenticationError("Invalid JWT token.") from exc
-        if decoded.get("type") != expected_clean:
-            raise exceptions.AuthenticationError(
-                f"Invalid token type: expected {expected_clean!r}."
-            )
+        _jwks.verify_token_type(decoded, expected_clean, algs)
         return decoded
 
 
@@ -196,8 +220,9 @@ def create_access_token(
     ttl_seconds: int = 900,
 ) -> str:
     """Creates a signed access JWT using JWTAuthEngine."""
-    engine = JWTAuthEngine(secret_key=secret_key)
-    return engine.create_access_token(claims, ttl_seconds=ttl_seconds)
+    return JWTAuthEngine(secret_key=secret_key).create_access_token(
+        claims, ttl_seconds=ttl_seconds
+    )
 
 
 def create_refresh_token(
@@ -207,8 +232,9 @@ def create_refresh_token(
     ttl_seconds: int = 604_800,
 ) -> str:
     """Creates a signed refresh JWT using JWTAuthEngine."""
-    engine = JWTAuthEngine(secret_key=secret_key)
-    return engine.create_refresh_token(claims, ttl_seconds=ttl_seconds)
+    return JWTAuthEngine(secret_key=secret_key).create_refresh_token(
+        claims, ttl_seconds=ttl_seconds
+    )
 
 
 def decode_jwt_token(
@@ -217,10 +243,18 @@ def decode_jwt_token(
     expected_type: str = "access",
     secret_key: str | None = None,
     jwks_url: str | None = None,
+    public_key: str | None = None,
+    audience: str | None = None,
+    issuer: str | None = None,
 ) -> dict[str, Any]:
     """Decodes and validates a JWT using JWTAuthEngine."""
-    engine = JWTAuthEngine(secret_key=secret_key, jwks_url=jwks_url)
-    return engine.decode_token(token, expected_type=expected_type)
+    return JWTAuthEngine(
+        secret_key=secret_key,
+        jwks_url=jwks_url,
+        public_key=public_key,
+        audience=audience,
+        issuer=issuer,
+    ).decode_token(token, expected_type=expected_type)
 
 
 def hash_password(password: str) -> str:

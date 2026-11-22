@@ -183,6 +183,15 @@ class BigQueryTelemetryExporter:
         self.close()
 
 
+def _serialize_record(record: models.UseCaseTelemetry) -> str:
+    row = record.model_dump(mode="json")
+    if record.error_message:
+        row["error_message"] = validation.scrub_sensitive_text(
+            record.error_message
+        )
+    return json.dumps(row, default=str)
+
+
 class BatchedGCSTelemetryExporter:
     """Buffers UseCaseTelemetry NDJSON lines and uploads batches to GCS."""
 
@@ -255,15 +264,6 @@ class BatchedGCSTelemetryExporter:
         del exc_t, exc_v, tb
         self.close()
 
-    @staticmethod
-    def _serialize_record(record: models.UseCaseTelemetry) -> str:
-        row = record.model_dump(mode="json")
-        if record.error_message:
-            row["error_message"] = validation.scrub_sensitive_text(
-                record.error_message
-            )
-        return json.dumps(row, default=str)
-
     def _upload(self, batch: list[models.UseCaseTelemetry]) -> None:
         try:
             gcs = self._get_client()
@@ -277,7 +277,7 @@ class BatchedGCSTelemetryExporter:
             day = sanitize_gcs_segment(batch[0].timestamp[:10], "1970-01-01")
             leaf = f"{u_n}/{day}/{c_id}_{uuid.uuid4().hex[:8]}.ndjson"
             key = f"{'/'.join(segs)}/{leaf}" if segs else leaf
-            body = "\n".join(self._serialize_record(r) for r in batch)
+            body = "\n".join(_serialize_record(r) for r in batch)
             gcs.bucket(self._bucket).blob(key).upload_from_string(
                 f"{body}\n",
                 content_type="application/x-ndjson",

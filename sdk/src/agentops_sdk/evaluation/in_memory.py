@@ -92,6 +92,18 @@ def _score_row(
     return scores
 
 
+def _tool_quality(used_tool: bool, has_error: bool) -> float:
+    if has_error and used_tool:
+        score = 0.95
+    elif has_error:
+        score = 0.50
+    elif used_tool:
+        score = 0.92
+    else:
+        score = 0.85
+    return score
+
+
 def _trajectory_scores(
     trajectory: Sequence[Mapping[str, Any]],
 ) -> dict[str, float]:
@@ -125,9 +137,7 @@ def _trajectory_scores(
         for turn in trajectory
     )
     return {
-        "tool_use_quality": (0.95 if used_tool else 0.50)
-        if has_error
-        else (0.92 if used_tool else 0.85),
+        "tool_use_quality": _tool_quality(used_tool, has_error),
         "task_success": 0.30 if has_error else 0.90,
         "multi_turn_chat_quality": 0.40 if has_error else 0.90,
         "multi_turn_safety": 0.85 if has_error else 0.95,
@@ -151,6 +161,7 @@ class InMemoryEvaluator(eval_ports.EvaluatorPort):
         default_scores: Mapping[str, float] | None = None,
         metrics: Sequence[str] | None = None,
     ) -> None:
+        """Initializes the in-memory evaluator with optional defaults."""
         self._defaults = (
             dict(default_scores) if default_scores is not None else None
         )

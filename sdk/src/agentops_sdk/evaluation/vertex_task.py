@@ -17,11 +17,12 @@ import vertexai
 
 from agentops_sdk.config import settings
 from agentops_sdk.domain import exceptions
+from agentops_sdk.evaluation import _task_runner
 from agentops_sdk.evaluation import _vertex_metrics
-from agentops_sdk.evaluation import heuristics
 from agentops_sdk.evaluation import models
 from agentops_sdk.evaluation import reporting
 from agentops_sdk.ports import evaluation as eval_ports
+from agentops_sdk.telemetry import provider
 
 _DetailedEvalOutput: TypeAlias = tuple[
     dict[str, float], dict[str, float], dict[str, list[str]], Any, str
@@ -32,7 +33,11 @@ _CONSOLE_EXPERIMENTS_URL = (
 )
 _LAZY_SUBMODULES = {
     "evaluation": "vertexai.evaluation",
+    "evaluation_service": (
+        "google.cloud.aiplatform_v1beta1.types.evaluation_service"
+    ),
     "pm": "vertexai.preview.evaluation.metrics",
+    "preview_evaluation": "vertexai.preview.evaluation",
 }
 
 
@@ -54,32 +59,38 @@ def _get_lazy_module(name: str) -> Any:
     return globals().get(name) or __getattr__(name)
 
 
-def _trajectory_to_vertex_row(
-    trajectory: Sequence[Mapping[str, Any]],
-) -> dict[str, Any]:
-    base = heuristics.trajectory_to_item(trajectory)
-    history = [
-        f"{t.get('role', '')}: {c}"
-        for t in trajectory
-        if (c := t.get("content"))
-    ]
-    calls: list[dict[str, Any]] = []
-    for turn in trajectory:
-        for tc in turn.get("tool_calls") or ():
-            if isinstance(tc, Mapping):
-                calls.append(
-                    {
-                        "tool_name": str(tc.get("name", "")),
-                        "tool_input": dict(tc.get("args") or {}),
-                    }
-                )
-    return {
-        "prompt": base["prompt"],
-        "response": base["response"],
-        "history": "\n".join(history[:-1]),
-        "conversation_history": list(trajectory),
-        "predicted_trajectory": calls,
-    }
+def _resolve_task_target(
+    cfg: models.VertexAIEvalConfig,
+    proj: str,
+    loc: str,
+    factory: Callable[..., Any] | None,
+    metrics: Sequence[Any],
+) -> tuple[Any, Any | None, bool]:
+    ar_cfg = _task_runner.build_autorater_config(
+        cfg, proj, loc, _get_lazy_module
+    )
+    if factory is not None:
+        return factory, ar_cfg, False
+    eval_mod = _get_lazy_module("evaluation")
+    needs_preview = ar_cfg is not None or any(
+        isinstance(m, str)
+        and m.strip().lower().startswith("trajectory_single_tool_use:")
+        for m in metrics
+    )
+    eval_cls = getattr(eval_mod, "EvalTask", None)
+    is_real_eval = getattr(
+        eval_mod, "__name__", ""
+    ) == "vertexai.evaluation" and getattr(
+        eval_cls, "__module__", ""
+    ).startswith("vertexai.")
+    if needs_preview and is_real_eval:
+        preview_mod = _get_lazy_module("preview_evaluation")
+        preview_cls = preview_mod.EvalTask
+        is_real_preview = getattr(preview_cls, "__module__", "").startswith(
+            "vertexai."
+        )
+        return preview_cls, ar_cfg, is_real_preview
+    return eval_cls, ar_cfg, False
 
 
 class VertexEvalTaskAdapter(eval_ports.EvaluatorPort):
@@ -153,33 +164,6 @@ class VertexEvalTaskAdapter(eval_ports.EvaluatorPort):
         )
         return scores, raw_scores, explanations, table, project_id
 
-    def _invoke_eval_task(
-        self,
-        df: Any,
-        resolved_metrics: Sequence[Any],
-        eval_mod: Any,
-        run_name: str | None,
-    ) -> Any:
-        cfg = self._config
-        task_cls = self._eval_task_factory or eval_mod.EvalTask
-        task = task_cls(
-            dataset=df,
-            metrics=resolved_metrics,
-            experiment=cfg.experiment,
-            metric_column_mapping=cfg.metric_column_mapping or None,
-            output_uri_prefix=cfg.output_uri_prefix or "",
-        )
-        run_id = (
-            (run_name or cfg.experiment_run_name) if cfg.experiment else None
-        )
-        return task.evaluate(
-            model=cfg.model,
-            prompt_template=cfg.prompt_template,
-            experiment_run_name=run_id,
-            retry_timeout=float(cfg.retry_timeout),
-            evaluation_service_qps=cfg.evaluation_service_qps,
-        )
-
     def _run_eval_task(
         self,
         df: Any,
@@ -202,7 +186,12 @@ class VertexEvalTaskAdapter(eval_ports.EvaluatorPort):
             )
             for m in metrics
         ]
-        run = self._invoke_eval_task(df, resolved, eval_mod, run_name)
+        target = _resolve_task_target(
+            self._config, project_id, location, self._eval_task_factory, metrics
+        )
+        run = _vertex_metrics.run_eval_task_instance(
+            self._config, df, resolved, target, run_name
+        )
         scores, raw, expls, table = _vertex_metrics.collect_task_stats(
             metrics, run, pd_mod, self._config.normalize_scores
         )
@@ -229,6 +218,7 @@ class VertexEvalTaskAdapter(eval_ports.EvaluatorPort):
         except exceptions.EvaluationError:
             raise
         except Exception as exc:
+            provider.record_fallback_metric("evaluation", "vertex_eval_error")
             raise exceptions.EvaluationError(
                 f"Vertex eval failed: {exc}"
             ) from exc
@@ -253,7 +243,7 @@ class VertexEvalTaskAdapter(eval_ports.EvaluatorPort):
             metrics if metrics is not None else _TRAJECTORY_DEFAULT_METRICS
         )
         return self._run_detailed(
-            [_trajectory_to_vertex_row(trajectory)], active
+            [_vertex_metrics.trajectory_to_vertex_row(trajectory)], active
         )[0]
 
     @override
@@ -281,10 +271,14 @@ class VertexEvalTaskAdapter(eval_ports.EvaluatorPort):
             dataset, metrics, run_id
         )
         loc = cfg.location or settings.get_gcp_settings().location
-        exp = cfg.experiment or "default"
+        active = list(metrics if metrics is not None else cfg.metrics)
+        exp_clean = (cfg.experiment or "").strip()
+        has_uri = any(_vertex_metrics.is_metric_uri(m) for m in active)
         url = (
-            f"{_CONSOLE_EXPERIMENTS_URL}/{loc}/experiments/{exp}"
+            f"{_CONSOLE_EXPERIMENTS_URL}/{loc}/experiments/{exp_clean}"
             f"/runs/{run_id}?project={proj}"
+            if exp_clean and not has_uri
+            else None
         )
         return reporting.build_suite_result(
             dataset,
@@ -293,7 +287,7 @@ class VertexEvalTaskAdapter(eval_ports.EvaluatorPort):
             table=table,
             expls=expls,
             normalize=cfg.normalize_scores,
-            experiment=exp,
+            experiment=exp_clean or "default",
             run_name=run_id,
             console_url=url,
             thresholds=thresholds,

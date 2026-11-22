@@ -96,8 +96,17 @@ class BoundedTTLCache(Generic[_K, _V]):
         ttl_seconds: float = 300.0,
         jitter_ratio: float = 0.1,
     ) -> None:
-        if maxsize <= 0 or ttl_seconds <= 0:
-            raise ValueError("maxsize and ttl_seconds must be positive.")
+        """Initializes BoundedTTLCache with maxsize, TTL, and jitter."""
+        if (
+            isinstance(maxsize, bool)
+            or isinstance(ttl_seconds, bool)
+            or not isinstance(maxsize, int)
+            or maxsize <= 0
+            or ttl_seconds <= 0
+        ):
+            raise ValueError(
+                "maxsize must be a positive int and ttl_seconds positive."
+            )
         self._maxsize = maxsize
         self._ttl = ttl_seconds
         self._jitter = max(0.0, min(jitter_ratio, 0.5))

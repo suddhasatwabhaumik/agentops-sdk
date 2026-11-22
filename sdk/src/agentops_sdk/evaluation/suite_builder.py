@@ -77,7 +77,14 @@ def extract_metric_stats(
         )
     expl_col = f"{metric_name}/explanation"
     has_expl = table is not None and expl_col in table.columns
-    explanations = [str(val) for val in table[expl_col]] if has_expl else []
+    explanations = (
+        [
+            text if pd_mod.notna(val) and (text := str(val).strip()) else ""
+            for val in table[expl_col]
+        ]
+        if has_expl
+        else []
+    )
     return normalize_score(raw, normalize), raw, explanations
 
 
@@ -108,13 +115,12 @@ def _build_metric_score(
         norm_val = summary_val if fallback is None else fallback
     threshold = ctx.thresholds.get(metric_name) if ctx.thresholds else None
     expl_list = ctx.explanations.get(metric_name, [])
+    raw_expl = expl_list[row_index] if row_index < len(expl_list) else ""
     return models.MetricScore(
         name=metric_name,
         raw_score=raw_val,
         normalized_score=min(1.0, max(0.0, norm_val)),
-        explanation=expl_list[row_index]
-        if row_index < len(expl_list)
-        else None,
+        explanation=raw_expl or None,
         threshold=threshold,
         is_passing=True if threshold is None else norm_val >= threshold,
     )

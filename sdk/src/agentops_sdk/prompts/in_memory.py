@@ -16,6 +16,7 @@ class InMemoryPromptAdapter:
     """Thread-safe in-memory PromptBackendPort implementation."""
 
     def __init__(self) -> None:
+        """Initializes an empty thread-safe InMemoryPromptAdapter."""
         self._lock = threading.RLock()
         self._store: dict[str, dict[str, prompt_ports.PromptTemplate]] = {}
 

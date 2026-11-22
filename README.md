@@ -17,9 +17,20 @@ This framework supports both new agent implementations (such as Google ADK and V
 
 ## 1. System Architecture & Flow
 
-The following diagram illustrates how the AgentOps SDK components interact to trace, govern, evaluate, and serve agents in the Google Customer GCP ecosystem:
+The following diagram illustrates how the AgentOps SDK components interact to trace, govern, evaluate, and serve agents in the Google Cloud ecosystem:
 
-![System Architecture](arch_overall_v1.png)
+![System Architecture](docs/arch_overall_v1.png)
+
+```mermaid
+flowchart LR
+    Agent["Agent Runtime (ADK / Vertex AI Agent Engine)"] --> SDK["agentops_sdk v1.0.0 (Hexagonal Core)"]
+    SDK --> Sec["Security & SQL Guard (Model Armor, Cloud DLP, JWT RS256/HS256, sqlglot AST/RLS)"]
+    SDK --> Mem["Memory & Prompts (Cloud SQL, Vertex Memory Bank, PromptRegistry)"]
+    SDK --> Eval["Vertex Eval (gemini-3.8-flash, AutoraterConfig, Quality Gates)"]
+    SDK --> Obs["Unified OTLP / GCP Observability (Cloud Trace, Logging, Tempo/Prometheus/Loki)"]
+    Agent --> MCP["FastMCP Governance Gateway (HeaderBindingMiddleware + AST/RLS)"]
+    MCP --> BQ["BigQuery / Feature Online Store / Upstream SQL API"]
+```
 
 ---
 
@@ -64,13 +75,10 @@ agentops-sdk/
 │
 ├── examples/
 │   ├── tutorial/                       # 15-module GCP hands-on tutorial + 00_setup & observability stack
-│   ├── full_stack/                     # End-to-end OTLP + Tempo/Prometheus/Loki/Grafana validation suite
-│   ├── otel_collector_gcp/             # OTel Collector -> Google Cloud Trace/Monitoring/Logging reference
-│   ├── demo_model_armor/               # Standalone offline & live Cloud Model Armor safety demo
-│   ├── demo_developer_rate_limiting.py # Token Bucket & Sliding Window async rate limit example
+│   ├── full_stack/                     # Consolidated OTLP + Tempo/Prometheus/Loki/Grafana suite (--hermetic mode)
 │   └── cicd_templates/                 # GitHub Actions CI quality gate workflow template
 │
-└── tests/                              # Unit, contract, & end-to-end verification suites
+└── tests/                              # Unit, contract, & 14 E2E verification suites
 ```
 
 ---
@@ -105,33 +113,28 @@ Standard GCP billing metrics cannot attribute token usage directly to business o
 ### 4.3 Security, Privacy, SQL Governance & Identity (`agentops_sdk.security`, `agentops_sdk.sql`)
 *   **Fail-Closed Model Armor Guardrails (`SecurityGuard`, `CloudModelArmorScanner`)**: Connects to Google Cloud Model Armor (`:sanitizeUserPrompt`, `:sanitizeModelResponse`) with `fail_closed=True` by default (`SecurityVerdict.ALLOW | SANITIZED | BLOCK`). Compound prompt-injection and PII detections enforce `BLOCK`. For offline tests and local demos, inject `LocalRuleSafetyScanner()` explicitly.
 *   **GDPR Output DLP Sanitizer (`OutputDLPSanitizer`, `GoogleDLPScrubber`)**: Redacts sensitive PII from generated text and tool outputs via regional Cloud DLP (`dlp.{location}.rep.googleapis.com`, setting `agentops.privacy.pii_scrubbed`), with explicit `RegexPrivacyScrubber()` available for offline tests/demos.
-*   **SQL AST & Row-Level Security (`SQLASTValidator`, `RowLevelPolicyEngine`)**: `validate_sql_query()` and `@validate_sql_query_decorator` enforce `sqlglot` read-only parsing and boundary-anchored table allowlists (`dataset.*`). `apply_row_level_policy()` injects parenthesized tenant predicates and role-gated admin bypasses (`role in {"admin", "superadmin"}`).
-*   **Identity, JWKS SSRF Defense & Secret Manager (`JWTAuthEngine`, `SecretManagerStore`)**: `validate_jwks_url()` enforces HTTPS and blocks private/loopback/metadata IPs (optionally pinned via `AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS`). `@pass_user_identity()`, `@inject_secret()`, and TTL-cached `SecretManagerStore` isolate credentials per execution scope.
+*   **SQL AST & Row-Level Security (`SQLASTValidator`, `RowLevelPolicyEngine`, `sqlglot>=30.0.0`)**: `validate_sql_query()` and `@validate_sql_query_decorator` enforce `sqlglot` read-only parsing and boundary-anchored table allowlists (`dataset.*`). `apply_row_level_policy()` provides scope-aware AST rewriting (`LEFT JOIN ... ON`, dialect-normalized CTEs, sole-`FROM` `ML.PREDICT`, `TableFromRows`/`PIVOT`/`UNPIVOT`/column-list alias rejection, post-rewrite verification) and role-gated admin bypasses (`role in {"admin", "superadmin"}`).
+*   **Identity, JWKS SSRF Defense & Secret Manager (`JWTAuthEngine`, `SecretManagerStore`, `pyjwt>=2.10.0`)**: `validate_jwks_url()` enforces HTTPS and blocks private/loopback/metadata IPs (optionally pinned via `AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS`). Supports `RS256` with mandatory `audience` + `issuer`, static RSA PEM `public_key` (`JWT_PUBLIC_KEY` / `MCP_JWT_PUBLIC_KEY`), Entra ID env aliases (`ENTRA_*`) with single-tenant issuer derivation, and `"tid"` -> `"tenant_id"` RLS mapping. `@pass_user_identity()`, `@inject_secret()`, and TTL-cached `SecretManagerStore` isolate credentials per execution scope.
 
 ### 4.4 Memory, Prompt Registry & Resilience (`agentops_sdk.memory`, `prompts`, `resilience`)
-*   **Unified Memory (`CloudSQLSessionMemory`, `VertexMemoryBank`, `CompositeMemory`)**: Relational session turns paginated cleanly via `get_messages()` (`after_id` / `before_id` cursors + `offset`/`limit`, max 200), combined with Vertex AI Agent Engine long-term memories using canonical `scope={"user_id": user_id}` writes/reads and native `search_query` similarity search. Use `InMemorySessionMemory` and `InMemoryLongTermMemory` explicitly for offline tests.
+*   **Unified Memory (`CloudSQLSessionMemory`, `VertexMemoryBank`, `CompositeMemory`)**: Relational session turns paginated cleanly via `get_messages()` (`after_id` / `before_id` cursors + `offset`/`limit`, max 200), combined with Vertex AI Agent Engine long-term memories using canonical `scope={"user_id": user_id}` writes/reads, native `search_query` similarity search, and optional `memory_type` filtering via bounded single-RPC over-fetch (`min(max(limit * 4, 20), 100)`). Use `InMemorySessionMemory` and `InMemoryLongTermMemory` explicitly for offline tests.
 *   **Prompt Governance (`PromptRegistry`)**: Semver prompt retrieval (`get_prompt()` returning `PromptTemplate`) and bounded Jinja2 `SandboxedEnvironment` rendering (`render_prompt()`, `format_prompt()`) across `LocalYAMLPromptAdapter`, `GCSPromptAdapter`, `VertexAIPromptAdapter`, and `InMemoryPromptAdapter` with explicit opt-in fallback (`fallback_to_local=False` by default).
 *   **Tool Output Validation (`@validate_tool_output`)**: Sync/async Pydantic schema validation and assertion callbacks with exponential backoff and jitter retries, raising `ToolValidationError` after exhausting attempts.
 
 ### 4.5 Pluggable Quality Gate Evals & CI/CD (`agentops_sdk.evaluation`, `pytest_plugin`)
-The evaluation subpackage implements `EvaluatorPort` across `InMemoryEvaluator`, `HeuristicEvaluator` (regex, keyword, and custom callable rules), `RagasEvaluator`, `VertexEvalTaskAdapter`, and `CompositeEvaluator`, plus `ExperimentEngine`, `genai_evals` (`evaluate_agent_engine`, `generate_loss_clusters`), AST-guarded `register_code_execution_metric`, and the `agentops_eval` pytest plugin (`--eval-mode=in_memory|heuristic|vertex`).
+The evaluation subpackage implements `EvaluatorPort` across `InMemoryEvaluator`, `HeuristicEvaluator` (regex, keyword, and custom callable rules), `RagasEvaluator`, `VertexEvalTaskAdapter`, and `CompositeEvaluator`, plus `ExperimentEngine`, `genai_evals` (`evaluate_agent_engine`, `generate_loss_clusters`), AST-guarded `register_code_execution_metric`, and the `agentops_eval` pytest plugin (`--eval-mode=in_memory|heuristic|vertex`). `VertexEvalTaskAdapter` and `simulator` default to `gemini-3.8-flash` (`AGENTOPS_EVAL_AUTORATER_MODEL`, full publisher URI + `judge_location="global"`), route `AutoraterConfig` via preview when needed (warning when unsupported), and automatically surface `EvaluationResult.explanations`, `raw_scores`, and `console_url` in quality gates.
 
 ### 4.6 Audit Ledger & Case Telemetry (ADR-2)
 *   **Immutable Audit Ledger (`agentops_sdk.audit`)**: `AuditLedger()` defaults to single-stream `CloudLoggingAuditAdapter` (`agentops-audit-ledger`). Opt in explicitly to direct BigQuery streaming via `BigQueryAuditAdapter(dataset_id="agentops_governance", table_id="audit_ledger")`, hardened local logs via `LocalFileAuditAdapter`, or offline tests via `InMemoryAuditAdapter`.
 *   **Per-Case Telemetry (`agentops_sdk.telemetry`)**: `UseCaseTracker` and `@trace_use_case` record per-case transaction counts, microsecond stage timings (`stages: dict[str, float]`), `business_kpi`, and `pl_impact_line`. Defaults to single-stream `CloudLoggingTelemetryExporter` (`agentops-use-case-telemetry`), with explicit opt-in for `BigQueryTelemetryExporter`, `BatchedGCSTelemetryExporter`, `CompositeTelemetryExporter`, `LocalFileTelemetryExporter`, and `InMemoryTelemetryExporter`, paired with `python -m tools.observability.log_router_admin`.
 
-### 4.7–4.12 Enterprise Reference Architecture Blueprints
-*   **Copilot Studio Gateway & Cross-Platform Orchestration**: [Copilot Studio Gateway](docs/copilot_studio_gateway.md) and [Cross-Platform Orchestration](docs/cross_platform_orchestration.md) (W3C `traceparent` context propagation, Cloud Armor WAF, Private Service Connect).
-*   **Recommended Enterprise Architecture Blueprints**:
-    *   [Enterprise MCP Hub & Golden Path](docs/recommendations/mcp_hub_and_golden_path_architecture.md)
-    *   [Enterprise Agent Registry (Enterprise Agent Platform / Vertex AI)](docs/recommendations/agent_registry_design.md)
-    *   [Governance-as-Code (GoC) Golden Pathway](docs/recommendations/governance_as_code_pathway.md)
-    *   [Enterprise Agent Skill Registry & Tool Catalog](docs/recommendations/skill_registry_design.md)
+### 4.7 Gateway Integration
+*   **Copilot Studio & FastMCP Gateways**: [Copilot Studio Gateway](docs/copilot_studio_gateway.md) and [MCP Integration](docs/mcp_integration.md) (Bearer JWT verification, Cloud Armor WAF, Private Service Connect, and W3C `traceparent` context propagation).
 
-### 4.13 Rate Limiting & Concurrency Control (`agentops_sdk.resilience`)
+### 4.8 Rate Limiting & Concurrency Control (`agentops_sdk.resilience`)
 `AsyncRateLimiter`, `SyncRateLimiter`, and `@rate_limit` protect downstream LLM and vendor endpoints using `RateLimitAlgorithm.TOKEN_BUCKET` or `SLIDING_WINDOW` plus bounded concurrency semaphores, raising `RateLimitExceededError` with `retry_after` metadata:
 
-*   **Executable Developer Example**: [`examples/demo_developer_rate_limiting.py`](examples/demo_developer_rate_limiting.py)
+*   **Tutorial Walkthrough**: [`examples/tutorial/03_rate_limiting/`](examples/tutorial/03_rate_limiting/)
 *   **Architecture & Sizing Guide**: [`docs/async_concurrency_and_rate_limiting_guide.md`](docs/async_concurrency_and_rate_limiting_guide.md)
 
 ---
@@ -232,11 +235,11 @@ All repository documentation, CI/CD templates, and configuration examples use cu
 | **Source Repository** | `ORG/agentops-sdk` (`DEFAULT_REPO`), `<ORG>/<REPO>`, `GITHUB_REPOSITORY` | `ORG/agentops-sdk` / `<ORG>/<REPO>` | Replace `ORG/agentops-sdk` (`DEFAULT_REPO` in `tools/release_notes/_cli_io.py`) and `<ORG>/<REPO>` with your GitHub organization and repository slug in `pip`/`gh` install commands, `.github/workflows/`, and Workload Identity Federation (WIF) attribute conditions (or export `GITHUB_REPOSITORY`). |
 | **GCP Project** | `<your-gcp-project-id>`, `my-gcp-project-id`, `GOOGLE_CLOUD_PROJECT` (aliases: `GCP_PROJECT`, `AGENTOPS_PROJECT_ID`, `MODEL_ARMOR_PROJECT_ID`, `SECURITY_PROJECT_ID`, `PROMPT_REGISTRY_PROJECT_ID`) | `None` (example: `<your-gcp-project-id>`) | Set `GOOGLE_CLOUD_PROJECT` (or a documented alias in `config/_schemas.py`) to your target GCP project ID in `.env`, Cloud Run/Agent Engine runtime env vars, `make publish-sdk GCP_PROJECT=...`, or Cloud Build `$PROJECT_ID`. Replace literal `<your-gcp-project-id>` / `my-gcp-project-id` tokens in scripts and snippets. |
 | **GCP Region** | `GOOGLE_CLOUD_LOCATION` (aliases: `GOOGLE_CLOUD_REGION`, `GCP_REGION`, `AGENTOPS_LOCATION`, `MODEL_ARMOR_LOCATION`, `MODEL_ARMOR_REGION`, `SECURITY_LOCATION`, `SECURITY_REGION`, `PROMPT_REGISTRY_LOCATION`), `_GCP_REGION` | `europe-west4` | Override if deploying Model Armor, Cloud DLP, BigQuery, Cloud SQL, or Vertex AI Feature Store in a different regional residency. |
-| **Model Armor Templates** | `MODEL_ARMOR_INPUT_TEMPLATE` (aliases: `MODEL_ARMOR_TEMPLATE_ID`, `SECURITY_TEMPLATE_ID`), `MODEL_ARMOR_OUTPUT_TEMPLATE` (alias: `SECURITY_OUTPUT_TEMPLATE_ID`), `MODEL_ARMOR_FAIL_CLOSED` | `agentops-input-guard`, `agentops-output-guard`, `true` | Provision matching Model Armor templates in your target project/location and set primary native `SecuritySettings` env vars (`MODEL_ARMOR_INPUT_TEMPLATE`, `MODEL_ARMOR_OUTPUT_TEMPLATE`). Note: `MODEL_ARMOR_PROJECT_ID` / `MODEL_ARMOR_LOCATION` work via `_schemas.py` aliases, and `MODEL_ARMOR_INPUT_TEMPLATE_ID` / `MODEL_ARMOR_OUTPUT_TEMPLATE_ID` are used by `examples/demo_model_armor/`. |
+| **Model Armor Templates** | `MODEL_ARMOR_INPUT_TEMPLATE` (aliases: `MODEL_ARMOR_TEMPLATE_ID`, `SECURITY_TEMPLATE_ID`), `MODEL_ARMOR_OUTPUT_TEMPLATE` (alias: `SECURITY_OUTPUT_TEMPLATE_ID`), `MODEL_ARMOR_FAIL_CLOSED` | `agentops-input-guard`, `agentops-output-guard`, `true` | Provision matching Model Armor templates in your target project/location and set primary native `SecuritySettings` env vars (`MODEL_ARMOR_INPUT_TEMPLATE`, `MODEL_ARMOR_OUTPUT_TEMPLATE`). Note: `MODEL_ARMOR_PROJECT_ID` / `MODEL_ARMOR_LOCATION` work via `_schemas.py` aliases. |
 | **Containers & Artifact Registry** | `agentops-python-repo` (`_AR_REPOSITORY` / `AR_REPOSITORY`), `agentops` (Docker repo), `agentops-mcp-server` (Cloud Run service) | `agentops-python-repo`, `agentops`, `agentops-mcp-server` | `agentops-python-repo` hosts Python SDK wheels (`Makefile` / `cloudbuild.yaml`); `agentops` is the Docker Artifact Registry repo (`europe-west4-docker.pkg.dev/<project>/agentops/...`); `agentops-mcp-server` is the Cloud Run service name. Create both AR repos and override names as needed. |
-| **Data Connector Gateway** | `CONNECTOR_API_URL` | `http://127.0.0.1:8081` (dev only) | Point to your private HTTPS upstream data connector service (`https://` is enforced by `mcp_servers` for all non-loopback targets unless `ALLOW_INSECURE_CONNECTOR_HTTP=true`). |
+| **Upstream SQL Gateway** | `CONNECTOR_API_URL` | `http://127.0.0.1:8081` (dev only) | Point to your private HTTPS upstream analytical SQL service (`https://` is enforced by `mcp_servers` for all non-loopback targets unless `ALLOW_INSECURE_CONNECTOR_HTTP=true`). |
 | **FinOps & Telemetry Tags** | Native `TelemetrySettings`: `AGENTOPS_TELEMETRY_MODE` (`OTEL_MODE`), `OTEL_COLLECTOR_URL` (`OTEL_EXPORTER_OTLP_ENDPOINT`), `OTEL_SERVICE_NAME`, `AGENTOPS_FINOPS_LOG_NAME`<br>App `TelemetryContext` example vars: `AGENTOPS_KPI`, `AGENTOPS_PL_LINE`, `AGENTOPS_PROJECT`, `AGENTOPS_ENV` | `auto`, `agentops-service`, `agentops-finops-telemetry` | `TelemetrySettings` natively reads `AGENTOPS_TELEMETRY_MODE`, `OTEL_*`, and `AGENTOPS_FINOPS_LOG_NAME` (`auto \| gcp \| otlp \| hybrid \| off`). `AGENTOPS_KPI`, `AGENTOPS_PL_LINE`, `AGENTOPS_PROJECT`, and `AGENTOPS_ENV` are application-level example env vars passed explicitly into `TelemetryContext(...)` via `os.getenv(...)` to match your FinOps taxonomy. |
-| **Identity & JWT Auth** | `AGENTOPS_IDENTITY__JWKS_URL`, `AGENTOPS_IDENTITY__CLIENT_ID`, `AGENTOPS_IDENTITY__ISSUER`, `ENVIRONMENT`, `AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS`, `JWT_SECRET_KEY` | `None` (dev-only `DEV_RBAC_USER`) | Configure your identity provider's HTTPS JWKS URL (`AGENTOPS_IDENTITY__JWKS_URL`), expected `aud` (`AGENTOPS_IDENTITY__CLIENT_ID`), `iss` (`AGENTOPS_IDENTITY__ISSUER`), and pinned hosts (`AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS`) for RS256 OIDC/Entra ID, or store a `>=32`-byte `JWT_SECRET_KEY` in GCP Secret Manager (`SecretManagerStore`). Set `ENVIRONMENT` (non-dev environments fail closed without JWKS or `JWT_SECRET_KEY`). |
+| **Identity & JWT Auth** | `AGENTOPS_IDENTITY__JWKS_URL`, `AGENTOPS_IDENTITY__CLIENT_ID`, `AGENTOPS_IDENTITY__ISSUER`, `ENTRA_*`, `JWT_PUBLIC_KEY` / `MCP_JWT_PUBLIC_KEY`, `ENVIRONMENT`, `AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS`, `JWT_SECRET_KEY` | `None` (dev-only `DEV_RBAC_USER`) | Configure your identity provider's HTTPS JWKS URL (`AGENTOPS_IDENTITY__JWKS_URL`), expected `aud` (`AGENTOPS_IDENTITY__CLIENT_ID`), `iss` (`AGENTOPS_IDENTITY__ISSUER`, or `ENTRA_*` with single-tenant issuer derivation), static RSA PEM `JWT_PUBLIC_KEY`/`MCP_JWT_PUBLIC_KEY`, and pinned hosts (`AGENTOPS_IDENTITY__ALLOWED_JWKS_HOSTS`) for RS256 OIDC/Entra ID, or store a `>=32`-byte `JWT_SECRET_KEY` in GCP Secret Manager (`SecretManagerStore`). Set `ENVIRONMENT` (non-dev environments fail closed without JWKS/public key or `JWT_SECRET_KEY`). |
 | **BigQuery Datasets & Tables** | `agentops_governance.audit_ledger`, `analytics.*`, `feature_store_dataset.features_store_data`, `supply_chain_dataset.*`, `prod_catalog.*`, `customer_semantic_layer.*`, `customer_lakehouse_*` | See examples | Create datasets/tables in your project, update `MCP_ALLOWED_TABLES`, and adjust `BigQueryAuditAdapter` / `BigQueryTelemetryExporter` dataset and table IDs. |
 | **Database, Memory Bank & Feature Store** | `DB_TYPE`, `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE_NAME`, `DB_DATABRICKS_HTTP_PATH` (`DATABRICKS_HTTP_PATH`), `DB_DATABRICKS_TOKEN` (`DATABRICKS_TOKEN`), `reasoning_engine_name`, `customer_online_store` / `feature_online_store` | `bigquery`, `127.0.0.1`, `5432`, `agentops` | Provision Cloud SQL Postgres (store `DB_PASSWORD` in Secret Manager; `DatabaseSettings` reads `DB_DATABASE_NAME`, not `DB_NAME`), register a Vertex AI Agent Engine reasoning engine (`projects/<your-gcp-project-id>/locations/<region>/reasoningEngines/<id>`), and create your Feature Online Store instance. |
 
@@ -268,8 +271,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
 OTEL_SERVICE_NAME=inventory-advisor-agent
 
 # 3. Google Cloud & Model Armor Safety Configuration (fail-closed by default)
-# (Note: MODEL_ARMOR_PROJECT_ID / MODEL_ARMOR_LOCATION work via _schemas.py aliases;
-# examples/demo_model_armor/ reads MODEL_ARMOR_*_TEMPLATE_ID.)
+# (Note: MODEL_ARMOR_PROJECT_ID / MODEL_ARMOR_LOCATION work via _schemas.py aliases.)
 GOOGLE_CLOUD_PROJECT=my-gcp-project-id
 GOOGLE_CLOUD_LOCATION=europe-west4
 MODEL_ARMOR_INPUT_TEMPLATE=agentops-input-guard
@@ -552,7 +554,7 @@ def sync_and_read_feature_store() -> dict:
     return online.read_online_features(
         "feature_online_store",
         "features_store_data_view",
-        entity_ids=["dealer-4711"],
+        entity_ids=["UNIT-001"],
         features=["stock_level", "lead_time_days"],
     )
 ```
@@ -579,7 +581,7 @@ class EnterpriseSupplyChainAgent:
         return {"supplier_id": supplier_id, "status": "ok"}
 ```
 
-*   **Executable Developer Example**: [`examples/demo_developer_rate_limiting.py`](examples/demo_developer_rate_limiting.py)
+*   **Tutorial Walkthrough**: [`examples/tutorial/03_rate_limiting/`](examples/tutorial/03_rate_limiting/)
 *   **Architecture & Sizing Guide**: [`docs/async_concurrency_and_rate_limiting_guide.md`](docs/async_concurrency_and_rate_limiting_guide.md)
 
 ### Step 12: Enterprise Agent Evaluation & Prompt Experimentation

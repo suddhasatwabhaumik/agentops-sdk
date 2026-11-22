@@ -253,3 +253,63 @@ async def test_header_binding_middleware_and_main(
         ["--transport", "stdio", "--host", "127.0.0.1", "--port", "9090"]
     )
     assert len(registered) == 3 and run_calls == ["stdio"]
+
+
+def test_mcp_entra_tid_rls_cache_keys_env_separation_and_config_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = secrets.token_hex(32)
+    eng = auth.JWTAuthEngine(secret_key=key)
+    tid_tok = eng.create_access_token(
+        {"sub": "entra-user", "tid": "tenant-acme"}
+    )
+    ok, sql, _ = auth_guard.validate_and_authorize_sql(
+        "SELECT id FROM orders",
+        token=tid_tok,
+        allowed_tables=["orders"],
+        jwt_engine=eng,
+    )
+    assert ok is True and "tenant_id = 'tenant-acme'" in sql
+
+    assert (
+        auth_guard.authorize_feature_store_tenant(
+            "inventory", ["tenant-acme:sku-1"], {"tid": "tenant-acme"}
+        )
+        == "tenant-acme"
+    )
+    for bad_tid in (True, False, ["tenant-acme"], {"id": "tenant-acme"}):
+        with pytest.raises(exceptions.AuthenticationError, match="Malformed"):
+            auth_guard.authorize_feature_store_tenant(
+                "inventory", ["tenant-acme:sku-1"], {"tenant_id": bad_tid}
+            )
+
+    auth_guard.clear_jwt_engine_cache()
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    dev_eng = auth_guard.get_jwt_engine()
+    monkeypatch.setenv("ENVIRONMENT", "")
+    with pytest.raises(exceptions.ConfigurationError):
+        auth_guard.get_jwt_engine()
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    assert auth_guard.get_jwt_engine() is dev_eng
+
+    monkeypatch.setenv("JWT_SECRET_KEY", key)
+    base_eng = auth_guard.get_jwt_engine()
+    monkeypatch.setenv("ENTRA_CLIENT_ID", "agentops-api")
+    assert auth_guard.get_jwt_engine() is not base_eng
+    monkeypatch.setenv("ENTRA_TENANT_ID", "example-tenant-01")
+    assert auth_guard.get_jwt_engine() is not base_eng
+
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    monkeypatch.delenv("ENTRA_CLIENT_ID", raising=False)
+    monkeypatch.delenv("ENTRA_TENANT_ID", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "")
+    auth_guard.clear_jwt_engine_cache()
+    cfg_ok, cfg_msg, cfg_hdrs = auth_guard.validate_and_authorize_sql(
+        "SELECT id FROM orders",
+        token=tid_tok,
+        allowed_tables=["orders"],
+    )
+    assert cfg_ok is False
+    assert cfg_msg.startswith("Configuration Error:")
+    assert cfg_hdrs == {}

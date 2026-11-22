@@ -149,3 +149,66 @@ async def test_composite_memory_degraded_recall() -> None:
     assert (await degraded.aget_context("s2", "u1", strict=False))[
         "memories"
     ] == []
+
+
+async def test_memory_type_filtering_and_bounded_overfetch() -> None:
+    ltm = InMemoryLongTermMemory()
+    comp = CompositeMemory(InMemorySessionMemory(), ltm)
+    comp.create_memory(
+        "Prefers Series-900", user_id="u1", memory_type="preference"
+    )
+    comp.create_memory("Operates UNIT-001", user_id="u1", memory_type="fact")
+
+    assert [
+        m.fact
+        for m in comp.retrieve_memories(user_id="u1", memory_type="preference")
+    ] == ["Prefers Series-900"]
+    assert len(comp.retrieve_memories(user_id="u1", memory_type="all")) == 2
+    assert len(comp.retrieve_memories(user_id="u1", memory_type=None)) == 2
+    assert [
+        m.fact
+        for m in await comp.aretrieve_memories(
+            user_id="u1", memory_type="preference"
+        )
+    ] == ["Prefers Series-900"]
+
+    seen_kw: list[dict[str, Any]] = []
+
+    async def _aretrieve(**kw: Any) -> Any:
+        seen_kw.append(kw)
+
+        async def _gen() -> Any:
+            yield SimpleNamespace(
+                name="m1",
+                fact="Operates UNIT-001",
+                metadata={"memory_type": "fact"},
+                score=0.8,
+            )
+            yield SimpleNamespace(
+                name="m2",
+                fact="Prefers Series-900",
+                metadata={"memory_type": "preference"},
+                score=0.9,
+            )
+
+        return _gen()
+
+    client = SimpleNamespace(
+        agent_engines=SimpleNamespace(memories=SimpleNamespace()),
+        aio=SimpleNamespace(
+            agent_engines=SimpleNamespace(
+                memories=SimpleNamespace(retrieve=_aretrieve)
+            )
+        ),
+    )
+    bank = VertexMemoryBank(
+        "engine-01",
+        project_id="test-proj",
+        location="europe-west4",
+        client=client,
+    )
+    got = await bank.aretrieve_memories(
+        user_id="u1", limit=3, memory_type="preference"
+    )
+    assert [m.fact for m in got] == ["Prefers Series-900"]
+    assert seen_kw[0]["simple_retrieval_params"]["page_size"] == 20

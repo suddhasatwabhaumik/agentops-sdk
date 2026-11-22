@@ -41,9 +41,9 @@ TARGETS = {
 
 
 def bootstrap_telemetry(
-    endpoint: str, run_id: str, verbose: bool
+    endpoint: str, run_id: str, verbose: bool, *, hermetic: bool = False
 ) -> TelemetryHandles:
-    """Configure OTLP traces, metrics, and stdlib log forwarding."""
+    """Configure OTLP or off-mode traces, metrics, and stdlib log forwarding."""
     os.environ["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(
         [
             f"service.namespace={SERVICE_NAMESPACE}",
@@ -66,6 +66,8 @@ def bootstrap_telemetry(
     else:
         root.addHandler(logging.NullHandler())
 
+    if hermetic:
+        return configure_telemetry(mode="off", service_name=SERVICE_NAME)
     return configure_telemetry(
         mode="otlp",
         service_name=SERVICE_NAME,
@@ -82,24 +84,61 @@ def assert_endpoint_reachable(endpoint: str) -> None:
     except OSError as err:
         raise SystemExit(
             f"Nothing is listening on {endpoint} ({err}).\n"
-            f"Start stack: docker compose -f {HERE / 'docker-compose.yaml'} up -d"
+            f"Start stack: docker compose -f {HERE / 'docker-compose.yaml'} "
+            "up -d\nOr run with --hermetic (or MODE=hermetic)."
         ) from err
 
 
+def _assert_hermetic_ledger(ledger: RunLedger) -> int:
+    """Validate local SDK assertions when running without Docker backends."""
+    expected_outcomes = {
+        "answered",
+        "blocked_by_safety",
+        "blocked_by_sql_guard",
+        "tool_output_rejected",
+        "llm_error",
+    }
+    missing = expected_outcomes - ledger.flows.keys()
+    if missing:
+        print(f"FAIL: missing scenario outcomes: {sorted(missing)}")
+        return 1
+    if ledger.rate_limit_rejections <= 0:
+        print("FAIL: expected rate_limit_rejections > 0")
+        return 1
+    if ledger.audit_entries <= 0 or ledger.case_records <= 0:
+        print("FAIL: expected audit_entries > 0 and case_records > 0")
+        return 1
+    if ledger.memory_recalls <= 0 or ledger.vertex_eval_runs <= 0:
+        print("FAIL: expected memory_recalls > 0 and vertex_eval_runs > 0")
+        return 1
+    print(
+        f"  [PASS] Hermetic SDK assertions: {sum(ledger.flows.values())} "
+        f"flows, {ledger.memory_recalls} memory recalls, "
+        f"{ledger.vertex_eval_runs} vertex eval runs, "
+        f"{ledger.rate_limit_rejections} RL rejections."
+    )
+    return 0
+
+
 def run_single_target(args: argparse.Namespace, target: str) -> int:
-    """Execute workload and validation against one OTLP collector target."""
+    """Execute workload and validation against one OTLP or hermetic target."""
+    hermetic = args.hermetic or os.environ.get("MODE", "").lower() == "hermetic"
     endpoint = TARGETS[target]
-    assert_endpoint_reachable(endpoint)
+    if not hermetic:
+        assert_endpoint_reachable(endpoint)
     run_id = f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     ledger = RunLedger(
         run_id=run_id,
-        target=target,
+        target="hermetic" if hermetic else target,
         service_name=SERVICE_NAME,
         flow_name=FLOW_NAME,
     )
-    print(f"AgentOps SDK full-stack run {run_id} ({target}: {endpoint})")
+    mode_label = "hermetic" if hermetic else f"{target}: {endpoint}"
+    print(f"AgentOps SDK full-stack run {run_id} ({mode_label})")
 
-    handles = bootstrap_telemetry(endpoint, run_id, args.verbose)
+    handles = bootstrap_telemetry(
+        endpoint, run_id, args.verbose, hermetic=hermetic
+    )
     try:
         ctx = build_context(ledger, HERE / "prompts", gcp_mode=args.gcp)
         asyncio.run(run_workload(ctx, args.iterations, args.loop))
@@ -115,6 +154,8 @@ def run_single_target(args: argparse.Namespace, target: str) -> int:
         f"{ledger.rate_limit_rejections}/{ledger.rate_limit_checks} RL rej, "
         f"{ledger.audit_entries} audits, {ledger.case_records} cases"
     )
+    if hermetic:
+        return _assert_hermetic_ledger(ledger)
     if args.no_validate:
         return 0
     validator = TelemetryValidator(
@@ -134,6 +175,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--loop", type=float, default=0)
     parser.add_argument("--no-validate", action="store_true")
+    parser.add_argument("--hermetic", action="store_true")
     parser.add_argument("--gcp", action="store_true")
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--verbose", action="store_true")
@@ -145,10 +187,11 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    """CLI entrypoint supporting alloy, otel-collector, or both targets."""
+    """CLI entrypoint supporting alloy, otel-collector, both, or hermetic."""
     args = _parse_args()
-    if args.target != "both":
-        return run_single_target(args, args.target)
+    if args.hermetic or args.target != "both":
+        target = "alloy" if args.target == "both" else args.target
+        return run_single_target(args, target)
 
     exit_code = 0
     for target in TARGETS:
