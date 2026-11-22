@@ -11,7 +11,7 @@ Welcome to the **AgentOps Governance Framework & SDK** repository. This platform
 This framework supports both new agent implementations (such as Google ADK and Vertex AI Agent Engine) and existing Python agents through a clean hexagonal SDK architecture (`agentops_sdk` v1.0.0) backed by typed `ports/` contracts and GCP-native adapters.
 
 > [!IMPORTANT]
-> **`agentops-sdk` `v1.0.0`**: Hexagonal architecture release featuring 12 cohesive subpackages, root `pyproject.toml` packaging, single-stream Cloud Logging defaults, fail-closed `SecurityGuard` and MCP auth, canonical `VertexMemoryBank` scope, and zero hidden mock fallbacks. Read the [v1.0.0 Release Notes](releases/v1.0.0_agentops_sdk_initial_release.md).
+> **`agentops-sdk` `v1.0.0`**: Hexagonal architecture release featuring 12 cohesive subpackages, root `pyproject.toml` packaging, single-stream Cloud Logging defaults, fail-closed `SecurityGuard` and MCP auth, canonical `VertexMemoryBank` scope, and zero hidden mock fallbacks. Read the [v1.0.0 Release Notes](releases/v1.0.0_agentops_sdk_initial_release.md) or browse the [SDK Wiki](wiki/Home.md).
 
 ---
 
