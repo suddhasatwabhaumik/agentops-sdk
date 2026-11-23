@@ -2,21 +2,18 @@
 # warranty or representation for any use or purpose. Your use of it is
 # subject to your agreement with Google.
 
-"""Validates full-stack SDK telemetry in Prometheus, Tempo, Loki, and Grafana."""
+"""Validates full-stack telemetry in Prometheus, Tempo, Loki, and Grafana."""
 
 from __future__ import annotations
 
 import time
 from typing import Any
 
-from _validator_backends import build_checks
-from _validator_checks import FAIL
-from _validator_checks import PASS
-from _validator_checks import WARN
-from _validator_checks import CheckResult
-from _validator_checks import ProbeCheck
-from _validator_checks import RunLedger
 import requests
+
+# isort: split
+import _validator_backends
+import _validator_checks
 
 __all__ = [
     "FAIL",
@@ -27,6 +24,13 @@ __all__ = [
     "TelemetryValidator",
     "print_report",
 ]
+
+FAIL = _validator_checks.FAIL
+PASS = _validator_checks.PASS
+WARN = _validator_checks.WARN
+CheckResult = _validator_checks.CheckResult
+ProbeCheck = _validator_checks.ProbeCheck
+RunLedger = _validator_checks.RunLedger
 
 
 def _any_value(value: dict[str, Any]) -> Any:
@@ -57,6 +61,16 @@ class TelemetryValidator:
         self.http = requests.Session()
         self._trace_cache: dict[str, list[dict[str, Any]]] = {}
 
+    def close(self) -> None:
+        """Close the underlying HTTP session."""
+        self.http.close()
+
+    def __enter__(self) -> TelemetryValidator:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
     def _get(self, url: str, **params: Any) -> Any:
         response = self.http.get(url, params=params, timeout=15)
         response.raise_for_status()
@@ -64,9 +78,11 @@ class TelemetryValidator:
 
     def prom(self, query: str) -> list[dict[str, Any]]:
         """Execute an instant PromQL query."""
-        return self._get(f"{self.prometheus_url}/api/v1/query", query=query)[
-            "data"
-        ]["result"]
+        return list(
+            self._get(f"{self.prometheus_url}/api/v1/query", query=query)[
+                "data"
+            ]["result"]
+        )
 
     def prom_value(self, query: str) -> float | None:
         """Return the scalar value of a single-series PromQL query."""
@@ -136,7 +152,7 @@ class TelemetryValidator:
 
     def validate(self, ledger: RunLedger) -> list[CheckResult]:
         """Poll probes until every check passes or timeout expires."""
-        checks = build_checks(self, ledger)
+        checks = _validator_backends.build_checks(self, ledger)
         last: dict[int, str] = {}
         passed: set[int] = set()
         deadline = time.monotonic() + self.timeout_seconds
@@ -170,7 +186,7 @@ class TelemetryValidator:
             except requests.RequestException as err:
                 url = (
                     err.request.url.split("?")[0]
-                    if err.request is not None
+                    if err.request is not None and err.request.url
                     else ""
                 )
                 ok, detail = False, f"{type(err).__name__} calling {url}"

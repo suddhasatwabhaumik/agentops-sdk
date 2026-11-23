@@ -32,7 +32,7 @@ TRACE_IDS: list[str] = []
 
 
 @trace_llm_call(
-    kpi_id="dealer-parts-availability",
+    kpi_id="tenant-parts-availability",
     pl_impact_line="aftersales-opex",
 )
 def write_sql(question: str):
@@ -62,7 +62,7 @@ def clean(sql: str) -> str:
 
 @trace_agent_flow(
     flow_name="sql_guard_demo",
-    kpi_id="dealer-parts-availability",
+    kpi_id="tenant-parts-availability",
     pl_impact_line="aftersales-opex",
 )
 def main() -> None:

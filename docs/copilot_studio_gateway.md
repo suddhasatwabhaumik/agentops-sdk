@@ -31,7 +31,7 @@ Low-code platforms that call HTTP/OpenAPI actions rather than Python SDKs direct
 
 ## 2. Reference Request/Response Contracts & FastAPI Wrapper
 
-All gateway endpoints must verify caller Bearer tokens via `JWTAuthEngine` (`agentops_sdk.security.auth`) before invoking backend services:
+All gateway endpoints must verify caller Bearer tokens via `JWTAuthEngine` (`agentops_sdk.security.auth`), return sanitized `401`/`403` error messages without leaking exception internals (`CWE-209`), and enforce resource ownership or admin roles (`CWE-862`) before invoking backend services:
 
 ```python
 from typing import Any
@@ -41,27 +41,36 @@ from pydantic import BaseModel, Field
 
 from agentops_sdk.audit import AuditLedger
 from agentops_sdk.domain.exceptions import AuthenticationError
-from agentops_sdk.domain.models import AuditLogEntry, SecurityVerdict
+from agentops_sdk.domain.models import (
+    AuditLogEntry,
+    ConversationTurn,
+    SecurityVerdict,
+)
+from agentops_sdk.memory import InMemorySessionMemory
 from agentops_sdk.security import (
     JWTAuthEngine,
+    LocalRuleSafetyScanner,
     OutputDLPSanitizer,
     RegexPrivacyScrubber,
     SecurityGuard,
-    LocalRuleSafetyScanner,
 )
 
 app = FastAPI(title="AgentOps Low-Code Gateway")
 
-# Production: omit custom scanner/scrubber to use CloudModelArmorScanner & GoogleDLPScrubber,
-# and configure JWTAuthEngine(jwks_url=..., audience=..., issuer=...).
+# Production: omit local doubles to use CloudModelArmorScanner, GoogleDLPScrubber,
+# and CloudSQLSessionMemory(connection_url=os.environ["DATABASE_URL"]), and
+# configure JWTAuthEngine(jwks_url=..., audience=..., issuer=...).
 jwt_engine = JWTAuthEngine()
 guard = SecurityGuard(scanner=LocalRuleSafetyScanner(), fail_closed=True)
 scrubber = RegexPrivacyScrubber()
 sanitizer = OutputDLPSanitizer(scrubber=scrubber)
 ledger = AuditLedger()  # Defaults to CloudLoggingAuditAdapter (ADR-2)
+session_memory = InMemorySessionMemory()
 
 
-def require_bearer_claims(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+def require_bearer_claims(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -72,8 +81,19 @@ def require_bearer_claims(authorization: str | None = Header(default=None)) -> d
     except AuthenticationError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
+            detail="Invalid or expired Bearer token.",
         ) from exc
+
+
+def _require_owner_or_admin(claims: dict[str, Any], owner_id: str) -> None:
+    if claims.get("role") in {"admin", "superadmin"} or (
+        bool(owner_id) and claims.get("sub") == owner_id
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Forbidden: caller does not own target resource.",
+    )
 
 
 class SafetyCheckRequest(BaseModel):
@@ -100,6 +120,11 @@ class PromptLoadRequest(BaseModel):
     prompt_id: str
     variables: dict[str, Any] = Field(default_factory=dict)
     version: str = "latest"
+
+
+class MemoryGetResponse(BaseModel):
+    session_id: str
+    turns: list[ConversationTurn]
 
 
 @app.post("/v1/safety/check", response_model=SafetyCheckResponse)
@@ -135,6 +160,22 @@ async def audit_log_route(
 ) -> dict[str, str]:
     await ledger.log_entry(entry)
     return {"status": "logged"}
+
+
+@app.get("/v1/memory/{session_id}", response_model=MemoryGetResponse)
+async def get_session_memory_route(
+    session_id: str,
+    claims: dict[str, Any] = Depends(require_bearer_claims),
+) -> MemoryGetResponse:
+    owner_id, sep, _ = session_id.partition(":")
+    if not sep or not owner_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="session_id must be scoped as '<owner_id>:<thread_id>'.",
+        )
+    _require_owner_or_admin(claims, owner_id)
+    turns = await session_memory.aget_messages(session_id, limit=50)
+    return MemoryGetResponse(session_id=session_id, turns=turns)
 ```
 
 ---

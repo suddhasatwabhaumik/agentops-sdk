@@ -27,7 +27,7 @@ Default policy mapping is `{"tenant_id": "tenant_id"}` (with Entra `"tid"` mappe
 
 | Resource | Why | Access needed |
 |---|---|---|
-| BigQuery table `agentops_tutorial.inventory_stock` (includes `country` column) | Live execution of AST-rewritten queries | `roles/bigquery.dataViewer` + `roles/bigquery.jobUser` |
+| BigQuery table `agentops_tutorial.tenant_inventory` (includes `country` column) | Live execution of AST-rewritten queries | `roles/bigquery.dataViewer` + `roles/bigquery.jobUser` |
 
 ## Run
 

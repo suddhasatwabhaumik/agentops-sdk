@@ -3,8 +3,8 @@
 **What you learn:** how to record operational use-case metrics (transactions processed, stage-by-stage latencies in `stages: dict[str, float]`, business KPI, P&L impact line) into Cloud Logging and BigQuery, correlated with OTel traces.
 
 ```
-reconcile_orders() ── with UseCaseTracker("dealer_order_reconciliation", exporter=CompositeTelemetryExporter(...))
-      tracker.set_metadata("dealer_id", ...)
+reconcile_orders() ── with UseCaseTracker("tenant_order_reconciliation", exporter=CompositeTelemetryExporter(...))
+      tracker.set_metadata("tenant_id", ...)
       start_stage / end_stage × 3, add_transactions(42)
       on exit ──► UseCaseTelemetry record {case_id, use_case_name, stages, total_latency_ms, business_kpi, trace_id}
                         │
@@ -40,4 +40,4 @@ Spans of the same run ──► OTLP ──► Tempo   (join key: trace_id)
 python examples/tutorial/02_case_telemetry/main.py
 ```
 
-Expected: prints `BigQuery row: {'use_case_name': 'dealer_order_reconciliation', 'transactions_processed': 42, ...}`. Without BigQuery write access the exporter logs an error and exits non-zero; see [`../ACCESS.md`](../ACCESS.md).
+Expected: prints `BigQuery row: {'use_case_name': 'tenant_order_reconciliation', 'transactions_processed': 42, ...}`. Without BigQuery write access the exporter logs an error and exits non-zero; see [`../ACCESS.md`](../ACCESS.md).

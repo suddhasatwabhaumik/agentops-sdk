@@ -10,7 +10,7 @@ Two standalone setup scripts (no SDK calls):
 ```
 preflight.py ──► ADC identity ──► testIamPermissions, serviceusage, GET on each resource ──► READY / BLOCKED table
 provision.py ──► resources/apis.py           serviceusage :enable
-             ──► resources/bigquery_table.py google-cloud-bigquery (agentops_tutorial.inventory_stock, 5 rows)
+             ──► resources/bigquery_table.py google-cloud-bigquery (agentops_tutorial.tenant_inventory, 5 rows)
              ──► resources/model_armor.py    GET verifies centrally provisioned agentops-input-guard / -output-guard
              ──► resources/agent_engine.py   vertexai.Client().agent_engines.create(context_spec.memory_bank_config)
              ──► resources/cloudsql.py       gcloud sql instances / databases / users (_ensure_user preserves existing passwords)

@@ -29,13 +29,13 @@ LIMITER = AsyncRateLimiter()
 
 
 def price_key(*_args, **kwargs) -> str:
-    """Scope price-lookup rate limits per dealer ID."""
-    return f"price:{kwargs['dealer_id']}"
+    """Scope price-lookup rate limits per tenant ID."""
+    return f"price:{kwargs['tenant_id']}"
 
 
 def sync_key(*_args, **kwargs) -> str:
-    """Scope bulk-sync concurrency caps per dealer ID."""
-    return f"sync:{kwargs['dealer_id']}"
+    """Scope bulk-sync concurrency caps per tenant ID."""
+    return f"sync:{kwargs['tenant_id']}"
 
 
 @rate_limit(
@@ -49,9 +49,9 @@ def sync_key(*_args, **kwargs) -> str:
     wait_timeout_seconds=0.0,
 )
 @trace_agent_span(agent_name="price_lookup")
-async def fetch_price(*, dealer_id: str, part_number: str) -> float:
+async def fetch_price(*, tenant_id: str, part_number: str) -> float:
     """Simulated supplier price API call."""
-    del dealer_id, part_number
+    del tenant_id, part_number
     await asyncio.sleep(0.05)
     return 129.90
 
@@ -65,9 +65,9 @@ async def fetch_price(*, dealer_id: str, part_number: str) -> float:
     limiter=LIMITER,
 )
 @trace_agent_span(agent_name="bulk_sync")
-async def bulk_sync(*, dealer_id: str) -> int:
+async def bulk_sync(*, tenant_id: str) -> int:
     """Simulated bulk price-list sync limited to 2 concurrent runs."""
-    del dealer_id
+    del tenant_id
     await asyncio.sleep(0.3)
     return 1
 
@@ -113,12 +113,12 @@ async def main() -> None:
     """Exercise sliding-window and concurrency rate limits."""
     print("\n1) sliding window 5 per 10 s, 12 calls:")
     ok_1, rej_1 = await burst(
-        fetch_price, 12, dealer_id="dealer-4711", part_number="PART-1001"
+        fetch_price, 12, tenant_id="tenant-4711", part_number="PART-1001"
     )
     print(f"   -> allowed={ok_1} rejected={rej_1}")
 
     print("\n2) concurrency cap 2, 6 calls at once:")
-    ok_2, rej_2 = await burst(bulk_sync, 6, dealer_id="dealer-4711")
+    ok_2, rej_2 = await burst(bulk_sync, 6, tenant_id="tenant-4711")
     print(f"   -> allowed={ok_2} rejected={rej_2}")
     print(f"   totals: allowed={ok_1 + ok_2}, rejected={rej_1 + rej_2}")
 

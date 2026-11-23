@@ -70,7 +70,8 @@ def release_sort_key(filepath: str) -> tuple[pkg_version.Version, str]:
 def clean_markdown_link(text: str) -> str:
     """Extracts plain text from a markdown link [Text](url)."""
     match = re.search(r"\[([^\]]+)\]", text)
-    return match.group(1).strip("` ") if match else text.strip("` \t\r\n")
+    raw = match.group(1) if match else text
+    return raw.replace("`", "").strip()
 
 
 def parse_release_metadata(filepath: str) -> dict[str, str]:

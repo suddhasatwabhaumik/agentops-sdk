@@ -28,13 +28,13 @@ from agentops_sdk import trace_llm_call
 
 
 @trace_llm_call(
-    kpi_id="dealer-communication",
+    kpi_id="tenant-communication",
     pl_impact_line="aftersales-opex",
 )
 def draft_email():
-    """Draft a dealer message containing realistic contact PII."""
+    """Draft a customer message containing realistic contact PII."""
     return gemini.generate(
-        "Write a 3-line e-mail to dealer contact Hans Mueller "
+        "Write a 3-line e-mail to customer contact Hans Mueller "
         "(hans.mueller@example.com, phone +49 171 5550123) "
         "confirming that oil filter PART-1001 ships tomorrow.",
         system="Plain text, no subject line.",
@@ -43,7 +43,7 @@ def draft_email():
 
 @trace_agent_flow(
     flow_name="dlp_demo",
-    kpi_id="dealer-communication",
+    kpi_id="tenant-communication",
     pl_impact_line="aftersales-opex",
 )
 async def main() -> None:

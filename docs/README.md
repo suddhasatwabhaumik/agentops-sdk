@@ -47,33 +47,30 @@ Please read through the following specifications for in-depth details of each su
 8.  ### [System Architecture & Networking](architecture_and_networking.md)
     *   **System Architecture Overview**: Layout of client query routes, FastMCP server (`mcp_servers/src/server.py`), BigQuery analytical lakehouse, Vertex AI Feature Store, and Vertex AI Agent Engine runtime.
     *   **Networking & Security Perimeter**: Cloud NAT, Private Google Access (PGA), Private Service Connect (PSC), and `SecretManagerStore`.
-9.  ### [CI/CD & Monitoring Integration](cicd_and_monitoring.md)
-    *   **CI/CD Automation Templates**: Modular GitHub Actions workflows (`examples/cicd_templates/agent_quality_gates.yml`) and Google Cloud Build (`cloudbuild.yaml`).
-    *   **FinOps & Trace Routing**: OpenTelemetry correlation tags (`agentops.*`, `business.*`, `llm.*`), Cloud Logging sinks, and Looker Studio cost dashboarding.
-10. ### [CI/CD Quality Gates & Pytest Plugin Integration](cicd_quality_gates_pytest_integration.md)
-    *   **Pytest Plugin Options**: `--eval-mode=in_memory | heuristic | vertex` (default `in_memory`), `--fail-under-*` threshold flags, and Markdown job summary reports.
-    *   **Assertion Helpers**: `assert_quality_gate` and `assert_trajectory_quality_gate` raising `QualityGateError` on threshold violations.
-11. ### [Vertex AI Gen AI & ADK Evaluator Guide](vertex_ai_evaluator_guide.md)
+9.  ### [CI/CD Quality Gates, Build Pipelines & Monitoring Correlation](cicd_quality_gates_pytest_integration.md)
+    *   **Pytest Plugin Options & Assertion Helpers**: `--eval-mode=in_memory | heuristic | vertex` (default `in_memory`), `--fail-under-*` threshold flags, `assert_quality_gate` / `assert_trajectory_quality_gate` (`QualityGateError`), and Markdown job summary reports.
+    *   **Hardened CI/CD Workflows & FinOps Correlation**: Immutable 40-SHA GitHub Action pins + keyless Workload Identity Federation (`examples/cicd_templates/agent_quality_gates.yml`, `.github/workflows/build-wheel.yml`), digest-pinned Google Cloud Build (`cloudbuild.yaml`), and OpenTelemetry / Cloud Logging (`ADR-2`) BigQuery FinOps billing correlation.
+10. ### [Vertex AI Gen AI & ADK Evaluator Guide](vertex_ai_evaluator_guide.md)
     *   **Unified Evaluation Suite**: `InMemoryEvaluator`, `HeuristicEvaluator`, `RagasEvaluator`, `VertexEvalTaskAdapter`, `CompositeEvaluator`, and `EvaluatorRegistry`.
     *   **Gemini 3.8 Flash & Quality Gate Telemetry**: `gemini-3.8-flash` default judge/simulator model (`AGENTOPS_EVAL_AUTORATER_MODEL`, full publisher URI + `judge_location="global"`), `AutoraterConfig` preview routing, and automatic `EvaluationResult.explanations` / `raw_scores` / `console_url` surfacing.
-12. ### [Model Context Protocol (MCP) Integration](mcp_integration.md)
+11. ### [Model Context Protocol (MCP) Integration](mcp_integration.md)
     *   **FastMCP Server & Tool Routing**: Containerized MCP server (`python -m mcp_servers.src.server`) exposing `query_database_tool`, `query_databricks_tool`, and `query_feature_store_tool`.
     *   **Fail-Closed Header Auth & AST Enforcement**: ASGI `HeaderBindingMiddleware` extracting HTTP `Authorization: Bearer` headers (no LLM-exposed `auth_token` parameter), `MCP_REQUIRE_AUTH=true` default, SQL AST + RLS + entity-type allowlists.
-13. ### [Copilot Studio & API Gateway Wrapper](copilot_studio_gateway.md)
-    *   **Gateway Integration**: Patterns for exposing safety (`SecurityGuard`), privacy (`OutputDLPSanitizer`), audit (`AuditLedger`), and session memory endpoints behind Cloud Armor WAF and Serverless VPC Access.
-14. ### [Vertex AI Feature Online Store Synchronization & Serving Framework](vertex_ai_feature_store_sync.md)
+12. ### [Copilot Studio & API Gateway Wrapper](copilot_studio_gateway.md)
+    *   **Gateway Integration**: Patterns for exposing safety (`SecurityGuard`), privacy (`OutputDLPSanitizer`), audit (`AuditLedger`), and owner-scoped session memory endpoints (`_require_owner_or_admin`, sanitized `401`/`403` errors) behind Cloud Armor WAF and Serverless VPC Access.
+13. ### [Vertex AI Feature Online Store Synchronization & Serving Framework](vertex_ai_feature_store_sync.md)
     *   **Modern Feature Store Serving**: Links BigQuery offline tables to Bigtable-backed Feature Online Stores in `europe-west4` for sub-10ms online reads.
     *   **Developer Python SDK (`FeatureStoreAdminClient` & `FeatureStoreOnlineClient`)**: Provisioning (`ensure_online_store`, `ensure_feature_view`), sync triggering (`trigger_sync`), and runtime reads (`read_online_features`).
-15. ### [Conversational Session & Long-Term Memory Architecture Guide](session_and_long_term_memory_guide.md)
+14. ### [Conversational Session & Long-Term Memory Architecture Guide](session_and_long_term_memory_guide.md)
     *   **Port Contracts (`SessionMemoryPort`, `LongTermMemoryPort`)**: Enforces strict session/user isolation and sync/async parity across backends.
     *   **Cloud SQL Relational Backend (`CloudSQLSessionMemory`)**: SQLAlchemy Core engine with `(session_id, id)` B-tree indexing, keyset (`after_id`, `before_id`) and offset pagination via `get_messages()`, `DEFAULT_PAGE_SIZE = 50`, `MAX_PAGE_SIZE = 200`.
     *   **Vertex AI Memory Bank (`VertexMemoryBank`)**: Persistent cross-session facts using canonical `scope={"user_id": user_id}`, optional `memory_type` filtering via bounded single-RPC over-fetch (`min(max(limit * 4, 20), 100)`), native `search_query` similarity recall, and explicit `InMemory*` test doubles.
-16. ### [Universal Trace, OpenTelemetry & FinOps Telemetry Guide](universal_trace_and_finops_guide.md)
+15. ### [Universal Trace, OpenTelemetry & FinOps Telemetry Guide](universal_trace_and_finops_guide.md)
     *   **Unified OpenTelemetry Provider (`configure_telemetry`)**: `auto`, `gcp`, `otlp`, `hybrid`, and `off` modes plus native `OtlpStdlibLogHandler` bridging.
     *   **FinOps & Token Instrumentation**: `@trace_agent_flow`, `@trace_agent_span`, `@trace_llm_call`, `log_llm_metrics`, `emit_finops_telemetry`, and `agentops.*` / `business.*` / `llm.*` / `gen_ai.*` span attributes.
-17. ### [BigQuery & GCS Observability & Per-Case Telemetry Architecture Guide](bigquery_gcs_observability_and_case_telemetry_guide.md)
+16. ### [BigQuery & GCS Observability & Per-Case Telemetry Architecture Guide](bigquery_gcs_observability_and_case_telemetry_guide.md)
     *   **Per-Case Telemetry**: Tracks per-case transaction counts, stage timing maps (`stages: dict[str, float]`), business KPIs, and P&L impact lines via `UseCaseTracker` and `@trace_use_case`.
     *   **Single-Stream Cloud Logging Default (ADR-2)**: Defaults to `CloudLoggingTelemetryExporter` (`agentops-use-case-telemetry`) while supporting explicit opt-in `BigQueryTelemetryExporter`, `BatchedGCSTelemetryExporter`, `CompositeTelemetryExporter`, `LocalFileTelemetryExporter`, and `InMemoryTelemetryExporter`.
-18. ### [Immutable Audit Ledger Architecture Design](audit_ledger_design.md)
+17. ### [Immutable Audit Ledger Architecture Design](audit_ledger_design.md)
     *   **Zero-Overhead Audit Default (ADR-2)**: `AuditLedger` defaults to `CloudLoggingAuditAdapter` (`agentops-audit-ledger`) over `AuditSinkPort` so Cloud Log Router handles asynchronous BigQuery archival.
     *   **Direct BigQuery & Opt-In Local Sinks**: Supports explicit `BigQueryAuditAdapter(dataset_id="agentops_governance", table_id="audit_ledger")` with bounded exponential `Retry`, day partitioning, `LocalFileAuditAdapter` (`0o600` + `O_NOFOLLOW`), and `InMemoryAuditAdapter` with zero silent fallbacks.

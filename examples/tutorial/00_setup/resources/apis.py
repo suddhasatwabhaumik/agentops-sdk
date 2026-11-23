@@ -8,20 +8,15 @@ APIS = ("dlp.googleapis.com", "sqladmin.googleapis.com")
 
 
 def ensure(project: str, location: str) -> str:
+    del location
     out = []
+    base = f"https://serviceusage.googleapis.com/v1/projects/{project}/services"
     for api in APIS:
-        code, data = common.call(
-            "GET",
-            f"https://serviceusage.googleapis.com/v1/projects/{project}/services/{api}",
-        )
+        code, data = common.call("GET", f"{base}/{api}")
         if code == 200 and data.get("state") == "ENABLED":
             out.append(f"{api}: enabled")
             continue
-        code, data = common.call(
-            "POST",
-            f"https://serviceusage.googleapis.com/v1/projects/{project}/services/{api}:enable",
-            {},
-        )
+        code, data = common.call("POST", f"{base}/{api}:enable", {})
         if code != 200:
             raise RuntimeError(
                 f"{api}: HTTP {code} {data.get('error', data)}"

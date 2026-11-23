@@ -27,7 +27,7 @@ question ──► validate_sql_query ──► BigQuery (if safe)
 | Resource | Why | Access needed |
 |---|---|---|
 | BigQuery table `agentops_governance.audit_ledger` | Immutable governance audit table | `roles/bigquery.dataEditor` + `roles/bigquery.jobUser` |
-| BigQuery table `agentops_tutorial.dealer_stock` | Audited sample table | `roles/bigquery.dataViewer` |
+| BigQuery table `agentops_tutorial.tenant_inventory` | Audited sample table | `roles/bigquery.dataViewer` |
 
 ## Run
 

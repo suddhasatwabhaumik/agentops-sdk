@@ -24,7 +24,7 @@ from agentops_sdk import trace_agent_flow
 from agentops_sdk import trace_agent_span
 from agentops_sdk import trace_llm_call
 
-KPI_ID = "dealer-parts-availability"
+KPI_ID = "tenant-parts-availability"
 PL_LINE = "aftersales-opex"
 TRACE_IDS: list[str] = []
 
@@ -51,24 +51,24 @@ def ask_gemini(prompt: str):
         prompt,
         system=(
             "You are an enterprise parts advisor supporting a "
-            "Google Customer. Answer the dealer in two short sentences."
+            "Google Customer. Answer the tenant in two short sentences."
         ),
     )
 
 
 @trace_agent_flow(
-    flow_name="dealer_parts_advisor",
+    flow_name="tenant_parts_advisor",
     agent_role="orchestrator",
     kpi_id=KPI_ID,
     pl_impact_line=PL_LINE,
     project_name=cfg.project,
     environment=cfg.environment,
 )
-def dealer_parts_advisor(question: str, part_number: str) -> str:
+def tenant_parts_advisor(question: str, part_number: str) -> str:
     """Execute stock lookup followed by Gemini answer generation."""
     TRACE_IDS.append(telemetry.current_trace_id())
     stock = lookup_stock(part_number)
-    response = ask_gemini(f"Dealer question: {question}\nStock report: {stock}")
+    response = ask_gemini(f"Tenant question: {question}\nStock report: {stock}")
 
     usage = response.usage_metadata
     log_llm_metrics(
@@ -80,9 +80,9 @@ def dealer_parts_advisor(question: str, part_number: str) -> str:
 
 
 def main() -> None:
-    """Run traced dealer advisor flow and confirm trace lands in Tempo."""
-    with bind_execution_scope(session_id=cfg.run_id, user_id="dealer-4711"):
-        answer = dealer_parts_advisor(
+    """Run traced tenant advisor flow and confirm trace lands in Tempo."""
+    with bind_execution_scope(session_id=cfg.run_id, user_id="tenant-4711"):
+        answer = tenant_parts_advisor(
             "Do we have oil filters for a Series-700 in stock, "
             "and should I order more?",
             part_number="PART-1001",

@@ -26,7 +26,7 @@ Passing `GoogleDLPScrubber` explicitly ensures DLP API or IAM failures surface i
 |---|---|---|
 | API `dlp.googleapis.com` | Cloud Sensitive Data Protection | `roles/serviceusage.serviceUsageAdmin` once to enable (`00_setup/provision.py apis`) |
 | Cloud DLP `deidentifyContent` | Runtime PII redaction | `roles/dlp.user` |
-| Vertex AI, Gemini | Generates the sample dealer draft | `roles/aiplatform.user` |
+| Vertex AI, Gemini | Generates the sample customer draft | `roles/aiplatform.user` |
 
 ## Run
 
@@ -34,4 +34,4 @@ Passing `GoogleDLPScrubber` explicitly ensures DLP API or IAM failures surface i
 python examples/tutorial/10_privacy_dlp/main.py
 ```
 
-Expected: prints the raw dealer draft containing synthetic contact PII, the DLP-scrubbed output, and `span agentops.privacy.pii_scrubbed=True`.
+Expected: prints the raw customer draft containing synthetic contact PII, the DLP-scrubbed output, and `span agentops.privacy.pii_scrubbed=True`.

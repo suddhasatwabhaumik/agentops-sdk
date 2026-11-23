@@ -25,9 +25,9 @@ services:
     volumes:
       - ./config/alloy/config.alloy:/etc/alloy/config.alloy:ro
     ports:
-      - "4317:4317"   # OTLP gRPC  (SDK default: OTEL_COLLECTOR_URL=http://localhost:4317)
-      - "4318:4318"   # OTLP HTTP
-      - "12345:12345" # Alloy UI, component graph and live debugging
+      - "127.0.0.1:4317:4317"   # OTLP gRPC  (SDK default: OTEL_COLLECTOR_URL=http://localhost:4317)
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
+      - "127.0.0.1:12345:12345" # Alloy UI, component graph and live debugging
     depends_on:
       - prometheus
       - tempo
@@ -39,11 +39,11 @@ services:
     volumes:
       - ./config/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     ports:
-      - "14317:4317"  # OTLP gRPC (remapped so it can run next to Alloy)
-      - "14318:4318"  # OTLP HTTP
-      - "8888:8888"   # Collector self-telemetry (Prometheus format)
-      - "8889:8889"   # SDK metrics re-exposed for Prometheus to scrape
-      - "13133:13133" # health_check extension
+      - "127.0.0.1:14317:4317"  # OTLP gRPC (remapped so it can run next to Alloy)
+      - "127.0.0.1:14318:4318"  # OTLP HTTP
+      - "127.0.0.1:8888:8888"   # Collector self-telemetry (Prometheus format)
+      - "127.0.0.1:8889:8889"   # SDK metrics re-exposed for Prometheus to scrape
+      - "127.0.0.1:13133:13133" # health_check extension
     depends_on:
       - tempo
       - loki
@@ -55,7 +55,7 @@ services:
       - ./config/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
     ports:
-      - "3200:3200"   # Tempo HTTP API (search, trace by ID, TraceQL)
+      - "127.0.0.1:3200:3200"   # Tempo HTTP API (search, trace by ID, TraceQL)
     depends_on:
       - prometheus
 
@@ -66,7 +66,7 @@ services:
       - ./config/loki/loki.yaml:/etc/loki/loki.yaml:ro
       - loki-data:/loki
     ports:
-      - "3100:3100"   # Loki HTTP API, including native OTLP ingestion at /otlp
+      - "127.0.0.1:3100:3100"   # Loki HTTP API, including native OTLP ingestion at /otlp
 
   prometheus:
     image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
@@ -81,7 +81,7 @@ services:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
 
   grafana:
     image: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
@@ -98,7 +98,7 @@ services:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./config/grafana/dashboards:/var/lib/grafana/dashboards/agentops:ro
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
       - tempo

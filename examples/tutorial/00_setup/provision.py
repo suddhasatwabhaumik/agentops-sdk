@@ -34,7 +34,7 @@ RESOURCES = {
     ),
     "bigquery": (
         bigquery_table,
-        "dataset agentops_tutorial + table dealer_stock",
+        "dataset agentops_tutorial + table tenant_inventory",
         "roles/bigquery.dataEditor + jobUser (or bigquery.admin)",
     ),
     "model-armor": (

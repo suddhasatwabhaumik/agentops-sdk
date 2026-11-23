@@ -12,6 +12,7 @@ from pathlib import Path
 import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -33,7 +34,10 @@ def _fetch_token() -> tuple[object, str, str, str]:
 def _http(
     token: str, method: str, url: str, body: dict | None = None
 ) -> tuple[int, dict]:
-    req = urllib.request.Request(
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(f"Expected https:// URL, got {url!r}")
+    req = urllib.request.Request(  # noqa: S310 - https scheme validated above
         url,
         method=method,
         headers={
@@ -43,7 +47,9 @@ def _http(
         data=json.dumps(body).encode() if body is not None else None,
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(  # noqa: S310 - https scheme validated
+            req, timeout=20
+        ) as resp:
             return resp.status, json.load(resp)
     except urllib.error.HTTPError as exc:
         try:
@@ -127,7 +133,7 @@ def _stack_and_auth_checks(
 def _bigquery_checks(
     token: str, p: str, perms: set[str]
 ) -> dict[str, list[tuple[str, bool]]]:
-    tutorial_table = f"{p}.agentops_tutorial.dealer_stock"
+    tutorial_table = f"{p}.agentops_tutorial.tenant_inventory"
     return {
         "05 06 sql guard + row-level security": [
             ("BigQuery jobs", "bigquery.jobs.create" in perms),
@@ -136,7 +142,7 @@ def _bigquery_checks(
                 _exists(
                     token,
                     f"https://bigquery.googleapis.com/bigquery/v2/projects/{p}"
-                    "/datasets/agentops_tutorial/tables/dealer_stock",
+                    "/datasets/agentops_tutorial/tables/tenant_inventory",
                 ),
             ),
         ],
@@ -168,12 +174,10 @@ def _safety_checks(
         f"https://modelarmor.{loc}.rep.googleapis.com/v1/projects/{p}"
         f"/locations/{loc}/templates"
     )
-    in_tpl = (
-        os.getenv("MODEL_ARMOR_INPUT_TEMPLATE") or ""
-    ).strip() or "agentops-input-guard"
-    out_tpl = (
-        os.getenv("MODEL_ARMOR_OUTPUT_TEMPLATE") or ""
-    ).strip() or "agentops-output-guard"
+    raw_in = os.getenv("MODEL_ARMOR_INPUT_TEMPLATE", "").strip()
+    raw_out = os.getenv("MODEL_ARMOR_OUTPUT_TEMPLATE", "").strip()
+    in_tpl = raw_in or "agentops-input-guard"
+    out_tpl = raw_out or "agentops-output-guard"
     return {
         "09 model armor": [
             (
@@ -213,6 +217,7 @@ def _memory_and_fs_checks(
 ) -> dict[str, list[tuple[str, bool]]]:
     bank = os.getenv("MEMORY_BANK_NAME", "")
     bank_loc = _memory_bank_location(bank, loc)
+    bank_url = f"https://{bank_loc}-aiplatform.googleapis.com/v1beta1/{bank}"
     return {
         "12 memory": [
             (
@@ -226,12 +231,7 @@ def _memory_and_fs_checks(
             ),
             (
                 "Agent Engine MEMORY_BANK_NAME exists",
-                bool(bank)
-                and _exists(
-                    token,
-                    f"https://{bank_loc}-aiplatform.googleapis.com"
-                    f"/v1beta1/{bank}",
-                ),
+                bool(bank) and _exists(token, bank_url),
             ),
             (
                 "can create Agent Engine",

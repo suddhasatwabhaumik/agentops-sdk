@@ -1,9 +1,10 @@
-"""Tiny REST helper shared by the provisioning modules (token from Application Default Credentials)."""
+"""Tiny REST helper shared by provisioning modules (token from ADC)."""
 
 from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import google.auth
@@ -24,7 +25,10 @@ def token() -> str:
 
 
 def call(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
-    req = urllib.request.Request(
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(f"Expected https:// URL, got {url!r}")
+    req = urllib.request.Request(  # noqa: S310 - https scheme validated above
         url,
         method=method,
         data=json.dumps(body).encode() if body is not None else None,
@@ -34,7 +38,9 @@ def call(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(  # noqa: S310 - https scheme validated
+            req, timeout=60
+        ) as resp:
             return resp.status, json.load(resp)
     except urllib.error.HTTPError as exc:
         try:

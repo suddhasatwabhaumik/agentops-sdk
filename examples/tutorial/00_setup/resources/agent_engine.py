@@ -1,7 +1,7 @@
-"""A Vertex AI Agent Engine instance used only for its Memory Bank (tutorial 12).
+"""Vertex AI Agent Engine instance used for Memory Bank (tutorial 12).
 
-No code is deployed to it; it is the container for memories. Its resource name goes into
-MEMORY_BANK_NAME in .env.
+No code is deployed to it; it acts as the Memory Bank container. Copy its
+resource name into MEMORY_BANK_NAME in .env.
 """
 
 from __future__ import annotations
@@ -17,12 +17,14 @@ def ensure(project: str, location: str) -> str:
         resource = getattr(engine, "api_resource", engine)
         if getattr(resource, "display_name", "") == DISPLAY_NAME:
             return f"exists: {resource.name}"
-    # An empty memory_bank_config turns the Memory Bank on with the service's default
-    # generation and embedding models (the API rejects older Gemini versions here).
+    # Empty memory_bank_config enables Memory Bank with default service
+    # generation and embedding models.
     engine = client.agent_engines.create(
         config={
             "display_name": DISPLAY_NAME,
-            "description": "Memory Bank for the AgentOps SDK tutorials (no deployed agent code).",
+            "description": (
+                "Memory Bank for AgentOps SDK tutorials (no deployed code)."
+            ),
             "context_spec": {"memory_bank_config": {}},
         }
     )

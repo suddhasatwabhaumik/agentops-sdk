@@ -1,4 +1,4 @@
-"""BigQuery `agentops_tutorial.dealer_stock` setup (tutorials 05, 06, 14).
+"""BigQuery `agentops_tutorial.tenant_inventory` setup (tutorials 05, 06, 14).
 
 Creates the dataset and table and seeds a few rows if empty.
 """
@@ -9,35 +9,35 @@ from google.cloud import bigquery
 
 ROWS = [
     {
-        "dealer_id": "dealer-4711",
+        "tenant_id": "tenant-4711",
         "country": "Germany",
         "part_number": "PART-1001",
         "units_available": 7,
         "warehouse": "Plant-EU-01",
     },
     {
-        "dealer_id": "dealer-4711",
+        "tenant_id": "tenant-4711",
         "country": "Germany",
         "part_number": "PART-1002",
         "units_available": 0,
         "warehouse": "Plant-EU-01",
     },
     {
-        "dealer_id": "dealer-0815",
+        "tenant_id": "tenant-0815",
         "country": "Brazil",
         "part_number": "PART-1001",
         "units_available": 12,
         "warehouse": "Plant-SA-01",
     },
     {
-        "dealer_id": "dealer-0815",
+        "tenant_id": "tenant-0815",
         "country": "Brazil",
         "part_number": "PART-1003",
         "units_available": 3,
         "warehouse": "Plant-SA-01",
     },
     {
-        "dealer_id": "dealer-2200",
+        "tenant_id": "tenant-2200",
         "country": "France",
         "part_number": "PART-1001",
         "units_available": 1,
@@ -45,7 +45,7 @@ ROWS = [
     },
 ]
 SCHEMA = [
-    bigquery.SchemaField("dealer_id", "STRING"),
+    bigquery.SchemaField("tenant_id", "STRING"),
     bigquery.SchemaField("country", "STRING"),
     bigquery.SchemaField("part_number", "STRING"),
     bigquery.SchemaField("units_available", "INT64"),
@@ -62,7 +62,7 @@ def ensure(
     client.create_dataset(
         dataset, exists_ok=True
     )  # needs bigquery.datasets.create
-    table_id = f"{project}.{dataset_id}.dealer_stock"
+    table_id = f"{project}.{dataset_id}.tenant_inventory"
     table = client.create_table(
         bigquery.Table(table_id, schema=SCHEMA), exists_ok=True
     )

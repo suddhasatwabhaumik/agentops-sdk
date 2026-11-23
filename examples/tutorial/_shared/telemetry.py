@@ -42,10 +42,15 @@ class Telemetry:
     def trace_landed(self, trace_id: str, timeout_s: float = 30.0) -> bool:
         """Poll local Tempo to confirm a trace ID landed."""
         url = f"{_tempo_url()}/api/traces/{trace_id}"
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"Expected http(s):// URL with host, got {url!r}")
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             try:
-                with urllib.request.urlopen(url, timeout=5) as resp:
+                with urllib.request.urlopen(  # noqa: S310 - http(s) validated
+                    url, timeout=5
+                ) as resp:
                     if resp.status == 200:
                         return True
             except (urllib.error.URLError, TimeoutError, OSError):
@@ -120,7 +125,14 @@ def prometheus_query(expr: str) -> list[tuple[dict[str, str], float]]:
     """Run an instant PromQL query against local Prometheus."""
     base = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
     query_url = f"{base}/api/v1/query?{urlencode({'query': expr})}"
-    with urllib.request.urlopen(query_url, timeout=5) as resp:
+    parsed = urlparse(query_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(
+            f"Expected http(s):// URL with host, got {query_url!r}"
+        )
+    with urllib.request.urlopen(  # noqa: S310 - http(s) scheme validated above
+        query_url, timeout=5
+    ) as resp:
         data = json.load(resp)
     return [
         (r["metric"], float(r["value"][1]))

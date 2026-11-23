@@ -31,8 +31,8 @@ BASE_SQL = (
 )
 
 USERS = {
-    "dealer-de-4711": {"region": "Germany"},
-    "dealer-br-0815": {"region": "Brazil"},
+    "tenant-de-4711": {"region": "Germany"},
+    "tenant-br-0815": {"region": "Brazil"},
     "ops-admin": {"role": "admin"},
 }
 

@@ -23,7 +23,7 @@ from agentops_sdk import CloudSQLSessionMemory
 from agentops_sdk import CompositeMemory
 from agentops_sdk import VertexMemoryBank
 
-USER = "dealer-4711"
+USER = "tenant-4711"
 SESSION = f"session-{cfg.run_id}"
 
 
@@ -73,7 +73,7 @@ def _exercise_memory_bank(bank: VertexMemoryBank) -> None:
 
     hits = bank.retrieve_memories(
         user_id=USER,
-        query="which equipment lines does the dealer sell?",
+        query="which equipment lines does the tenant sell?",
         limit=1,
     )
     print(f"   semantic retrieval -> {[h.fact for h in hits]}")
@@ -100,7 +100,7 @@ def main() -> None:
     context = composite.get_context(
         SESSION,
         user_id=USER,
-        query="which equipment lines does the dealer sell?",
+        query="which equipment lines does the tenant sell?",
         strict=True,
     )
     print(f"\nC) CompositeMemory.get_context keys: {sorted(context)}")

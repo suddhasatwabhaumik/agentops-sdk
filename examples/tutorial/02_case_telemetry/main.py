@@ -19,6 +19,8 @@ from _shared import telemetry
 cfg = settings.load("02_case_telemetry")
 tel = telemetry.start(cfg)
 
+from google.cloud import bigquery
+
 from agentops_sdk import BigQueryTelemetryExporter
 from agentops_sdk import CloudLoggingTelemetryExporter
 from agentops_sdk import CompositeTelemetryExporter
@@ -44,19 +46,19 @@ EXPORTER = CompositeTelemetryExporter(
 
 
 @trace_agent_flow(
-    flow_name="dealer_order_reconciliation",
+    flow_name="tenant_order_reconciliation",
     kpi_id="orders-reconciled",
     pl_impact_line="aftersales-opex",
 )
-def reconcile_orders(dealer_id: str) -> tuple[str, dict[str, object]]:
+def reconcile_orders(tenant_id: str) -> tuple[str, dict[str, object]]:
     """Track per-stage timings and transactions with UseCaseTracker."""
     with UseCaseTracker(
-        "dealer_order_reconciliation",
+        "tenant_order_reconciliation",
         exporter=EXPORTER,
         business_kpi="orders-reconciled",
         pl_impact_line="aftersales-opex",
     ) as tracker:
-        tracker.set_metadata("dealer_id", dealer_id)
+        tracker.set_metadata("tenant_id", tenant_id)
 
         tracker.start_stage("fetch_orders")
         time.sleep(0.12)
@@ -76,19 +78,20 @@ def reconcile_orders(dealer_id: str) -> tuple[str, dict[str, object]]:
         raise RuntimeError("UseCaseTracker did not emit a telemetry record.")
     return tracker.record.case_id, {
         "transactions_processed": tracker.record.transactions_processed,
-        "dealer_id": dealer_id,
+        "tenant_id": tenant_id,
     }
 
 
-def _poll_bigquery_row(case_id: str) -> dict | None:
+def _poll_bigquery_row(case_id: str) -> dict[str, object] | None:
     query = (
         "SELECT use_case_name, transactions_processed, "
         "total_latency_ms, trace_id, success "
         f"FROM `{cfg.project}.{DATASET}.{TABLE}` "
-        f"WHERE case_id = '{case_id}'"
+        "WHERE case_id = @case_id"
     )
+    params = [bigquery.ScalarQueryParameter("case_id", "STRING", case_id)]
     for _ in range(6):
-        rows = bq.run(query)
+        rows = bq.run(query, params=params)
         if rows:
             return rows[0]
         time.sleep(5)
@@ -97,8 +100,8 @@ def _poll_bigquery_row(case_id: str) -> dict | None:
 
 def main() -> None:
     """Run order reconciliation and confirm the record landed in BigQuery."""
-    with bind_execution_scope(session_id=cfg.run_id, user_id="dealer-4711"):
-        case_id, summary = reconcile_orders("dealer-4711")
+    with bind_execution_scope(session_id=cfg.run_id, user_id="tenant-4711"):
+        case_id, summary = reconcile_orders("tenant-4711")
     print(f"\nuse case done: {summary}, case_id={case_id}")
     tel.flush()
 

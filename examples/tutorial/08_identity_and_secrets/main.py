@@ -62,7 +62,7 @@ def supplier_tool(part_number: str, secret_payload: str = "") -> str:
 @pass_user_identity()
 @trace_agent_flow(
     flow_name="identity_demo",
-    kpi_id="dealer-parts-availability",
+    kpi_id="tenant-parts-availability",
     pl_impact_line="aftersales-opex",
 )
 def handle_request(
@@ -85,7 +85,7 @@ def main() -> None:
     signing_key = SECRET_STORE.get_secret("adk-jwt-secret-key")
     jwt_engine = JWTAuthEngine(secret_key=signing_key)
     caller_token = jwt_engine.create_access_token(
-        {"sub": "dealer-4711", "role": "dealer", "region": "EMEA"}
+        {"sub": "tenant-4711", "role": "tenant_user", "region": "EMEA"}
     )
     if STORE_CREDENTIAL:
         payload = json.dumps({"api_key": f"demo-{secrets.token_hex(8)}"})

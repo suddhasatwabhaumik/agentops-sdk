@@ -14,7 +14,7 @@ steps:
         pip install --no-cache-dir -e ".[dev,all]"
         ruff check sdk/src/ mcp_servers/src/ tests/ tools/ examples/
         ruff format --check sdk/src/ mcp_servers/src/ tests/ tools/ examples/
-        mypy --strict sdk/src/agentops_sdk mcp_servers/src
+        mypy --strict sdk/src/agentops_sdk mcp_servers/src tools
 
   # Step 2: Policy checking using pinned static Open Policy Agent (OPA) binary
   # Add args: ['test', 'policies/', '-v'] when Terraform Rego policies/ are added.

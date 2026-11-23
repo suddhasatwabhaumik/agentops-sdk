@@ -181,16 +181,26 @@ def test_agent_against_golden_benchmark(case, quality_gate_evaluator):
 
 ---
 
-## 6. Reference CI/CD Workflow ([`examples/cicd_templates/agent_quality_gates.yml`](../examples/cicd_templates/agent_quality_gates.yml))
+## 6. Reference CI/CD Workflow & Repository Pipelines
+
+### 6.1 Downstream Agent Quality Gate Workflow ([`examples/cicd_templates/agent_quality_gates.yml`](../examples/cicd_templates/agent_quality_gates.yml))
+
+> [!IMPORTANT]
+> **Supply-Chain & Keyless WIF Hardening (`CS-CICD-001`)**: Pin every GitHub Action to an immutable 40-character commit SHA, restrict default `GITHUB_TOKEN` scope to `permissions: contents: read`, and authenticate to Google Cloud exclusively via **Workload Identity Federation (`google-github-actions/auth` + `id-token: write`)** — never store long-lived JSON service account keys in CI secrets.
 
 ```yaml
+permissions:
+  contents: read
+
 jobs:
   pr-in-memory-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev,eval]"
@@ -199,13 +209,24 @@ jobs:
   vertex-cloud-gate:
     if: github.event_name == 'push' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_TST_DEPLOYER_SA }}
       - run: pip install -e ".[dev,eval]"
-      - run: pytest -v --eval-mode=vertex --eval-project=${{ secrets.GCP_PROJECT_ID }} --eval-location=europe-west4 --eval-report-path=eval_summary.md
+      - env:
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID || vars.GCP_PROJECT_ID }}
+          GOOGLE_CLOUD_LOCATION: "europe-west4"
+        run: pytest -v --eval-mode=vertex --eval-report-path=eval_summary.md
 ```
 
 Verify locally against the SDK test suite:
@@ -214,9 +235,33 @@ Verify locally against the SDK test suite:
 pytest tests/unit/test_pytest_plugin.py tests/unit/test_evaluation.py --eval-mode=in_memory -v
 ```
 
+### 6.2 Repository CI, Wheel Packaging & GitHub Release ([`.github/workflows/build-wheel.yml`](../.github/workflows/build-wheel.yml))
+Triggered on pushes, release tags (`v*`), and PRs to `main` (plus `workflow_dispatch`) using immutable 40-char commit-SHA action pins and split least-privilege jobs (`build-and-test` with `contents: read`; `release` with `contents: write`):
+*   **Lint & Strict Type Checks**: Runs `ruff check` and `ruff format --check` (`line-length = 80`) across `sdk/src/`, `mcp_servers/src/`, `tests/`, `tools/`, `examples/`, plus `mypy --strict sdk/src/agentops_sdk mcp_servers/src tools`.
+*   **Unit & Contract Suite**: Runs `pytest -v tests/unit tests/contract --eval-mode=in_memory --eval-report-path=eval_quality_gate_summary.md` with coverage reporting and publishes the summary to `$GITHUB_STEP_SUMMARY`.
+*   **Release Notes & Wheel Integrity**: Runs `python -m tools.release_notes.consolidate`, builds `.whl` from the repository root via `python -m build --wheel .`, verifies `v{__version__}` tag parity and `agentops_sdk/py.typed` inclusion, validates metadata via `twine check`, smoke-tests base and `[all]` wheels in isolated off-`sys.path` virtualenvs, and generates `SHA256SUMS`.
+
+### 6.3 Google Cloud Build Pipeline ([`cloudbuild.yaml`](../cloudbuild.yaml))
+1.  **Install & Lint**: Installs `.[dev,all]` and enforces `ruff check`, `ruff format --check`, and `mypy --strict sdk/src/agentops_sdk mcp_servers/src tools` inside `@sha256:` digest-pinned builder containers.
+2.  **OPA Policy Check**: Executes digest-pinned static Open Policy Agent (`openpolicyagent/opa:0.70.0-static`).
+3.  **Unit & Contract Tests**: Executes `pytest -v tests/unit tests/contract --eval-mode=in_memory`.
+4.  **Build & Conditional Artifact Registry Upload**: Builds via `python3 -m build .`, validates via `twine check dist/*`, and publishes via `twine upload` to `https://${_GCP_REGION}-python.pkg.dev/${PROJECT_ID}/${_AR_REPOSITORY}/` only when a release tag (`_TAG_NAME` / `TAG_NAME`) is present.
+
 ---
 
-## 7. Implementation File Map
+## 7. Cloud FinOps & Post-Deployment Monitoring Correlation
+
+Once an agent passes CI/CD quality gates, `agentops_sdk.telemetry` correlates runtime token consumption, stage latency, and operational telemetry directly to business KPIs and environments:
+
+*   **OpenTelemetry Span & Log Correlation**: `configure_telemetry(mode=...)` (`auto`, `gcp`, `otlp`, `hybrid`, `off`) initializes `TracerProvider`, `MeterProvider`, and `OtlpStdlibLogHandler` bridging. `@trace_agent_flow`, `@trace_agent_span`, and `@trace_llm_call` emit standardized attributes (`business.kpi_id`, `business.pl_impact_line`, `agentops.project.name`, `agentops.environment`, `agentops.agent.role` / `name` / `urn`, `agentops.session.id` / `user.id`, `llm.model_name`, `llm.usage.prompt_tokens` / `completion_tokens`, and `gen_ai.*`).
+*   **Single-Stream Cloud Logging Defaults (`ADR-2`)**: Traces export to Google Cloud Trace (`CloudTraceSpanExporter`) and/or an OTLP Collector (`BatchSpanProcessor`) while token metrics emit to `gen_ai.client.token.usage`. Structured FinOps logs (`agentops-finops-telemetry`), per-case telemetry (`UseCaseTracker` -> `agentops-use-case-telemetry`), and compliance audits (`AuditLedger` -> `agentops-audit-ledger`) write to Cloud Logging by default.
+*   **Log Router Sinks & Billing Attribution (`tools/observability/`)**: `python -m tools.observability.log_router_admin` and [`tools/observability/setup_log_routers.sh`](../tools/observability/setup_log_routers.sh) provision partitioned BigQuery (`agentops_observability`) and GCS archive sinks asynchronously (with CLI secret redaction). In BigQuery, exported telemetry rows join with live GCP Billing exports (`project.id`, `agentops.project.name`, `business.kpi_id`) to power Looker Studio cost and latency dashboards without hardcoding token pricing in SDK code.
+
+See [`universal_trace_and_finops_guide.md`](universal_trace_and_finops_guide.md) and [`bigquery_gcs_observability_and_case_telemetry_guide.md`](bigquery_gcs_observability_and_case_telemetry_guide.md) for full telemetry schemas.
+
+---
+
+## 8. Implementation File Map
 
 | Path | Responsibility |
 | :--- | :--- |
@@ -225,4 +270,6 @@ pytest tests/unit/test_pytest_plugin.py tests/unit/test_evaluation.py --eval-mod
 | [`sdk/src/agentops_sdk/evaluation/quality_gates.py`](../sdk/src/agentops_sdk/evaluation/quality_gates.py) | `evaluate_agent_response`, `evaluate_agent_trajectory`, `assert_quality_gate`, `assert_trajectory_quality_gate` |
 | [`sdk/src/agentops_sdk/evaluation/reporting.py`](../sdk/src/agentops_sdk/evaluation/reporting.py) | `QualityGateSessionReporter` & Markdown summary table rendering |
 | [`tests/data/golden_eval_dataset.yaml`](../tests/data/golden_eval_dataset.yaml) | Reference golden benchmark dataset |
-| [`examples/cicd_templates/agent_quality_gates.yml`](../examples/cicd_templates/agent_quality_gates.yml) | Reference GitHub Actions quality-gate pipeline |
+| [`examples/cicd_templates/agent_quality_gates.yml`](../examples/cicd_templates/agent_quality_gates.yml) | Reference GitHub Actions quality-gate pipeline (40-SHA pins + keyless WIF) |
+| [`.github/workflows/build-wheel.yml`](../.github/workflows/build-wheel.yml) | Repository CI, strict lint/mypy, isolated wheel verification, and GitHub Release workflow |
+| [`cloudbuild.yaml`](../cloudbuild.yaml) | Google Cloud Build lint, static OPA check, test, and Artifact Registry wheel pipeline |

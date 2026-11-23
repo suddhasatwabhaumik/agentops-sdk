@@ -4,7 +4,7 @@ Project `<your-gcp-project-id>`, region `europe-west4`. Run `examples/tutorial/0
 
 ## Standard Baseline Roles
 
-With `roles/aiplatform.user` and Secret Manager access (`roles/secretmanager.secretAccessor`, or admin roles in sandbox), tutorials **01, 03, 04, 07, 08, 11, and 13** run immediately; **05** and **06** run once the `agentops_tutorial` BigQuery dataset and `dealer_stock` table exist.
+With `roles/aiplatform.user` and Secret Manager access (`roles/secretmanager.secretAccessor`, or admin roles in sandbox), tutorials **01, 03, 04, 07, 08, 11, and 13** run immediately; **05** and **06** run once the `agentops_tutorial` BigQuery dataset and `tenant_inventory` table exist.
 
 ## Additional Access Matrix
 

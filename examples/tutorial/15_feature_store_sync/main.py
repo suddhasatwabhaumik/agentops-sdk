@@ -28,9 +28,9 @@ from agentops_sdk import trace_agent_flow
 from agentops_sdk import trace_agent_span
 
 DATASET = os.getenv("TUTORIAL_BQ_DATASET", "agentops_tutorial")
-TABLE = "dealer_features"
+TABLE = "tenant_features"
 STORE = os.getenv("TUTORIAL_ONLINE_STORE_ID", "agentops_tutorial_online_store")
-VIEW = os.getenv("TUTORIAL_FEATURE_VIEW_ID", "dealer_features_view")
+VIEW = os.getenv("TUTORIAL_FEATURE_VIEW_ID", "tenant_features_view")
 FEATURES = ["sales_30d_eur", "open_backorders", "country"]
 
 
@@ -54,14 +54,14 @@ def _seed_bigquery_features() -> str:
     now = datetime.now(UTC).isoformat()
     rows = [
         {
-            "entity_id": "dealer-4711",
+            "entity_id": "tenant-4711",
             "feature_timestamp": now,
             "sales_30d_eur": 184250.0,
             "open_backorders": 3,
             "country": "Germany",
         },
         {
-            "entity_id": "dealer-0815",
+            "entity_id": "tenant-0815",
             "feature_timestamp": now,
             "sales_30d_eur": 96100.0,
             "open_backorders": 11,
@@ -74,22 +74,22 @@ def _seed_bigquery_features() -> str:
     return table_id
 
 
-@trace_agent_span(agent_name="dealer_features_tool")
-def dealer_features(
-    online_client: FeatureStoreOnlineClient, dealer_id: str
+@trace_agent_span(agent_name="tenant_features_tool")
+def tenant_features(
+    online_client: FeatureStoreOnlineClient, tenant_id: str
 ) -> dict:
     """Low-latency online feature lookup called by an agent tool."""
     return online_client.read_online_features(
         STORE,
         VIEW,
-        entity_ids=[dealer_id],
+        entity_ids=[tenant_id],
         features=FEATURES,
     )
 
 
 @trace_agent_flow(
     flow_name="feature_store_demo",
-    kpi_id="dealer-insights",
+    kpi_id="tenant-insights",
     pl_impact_line="aftersales-opex",
 )
 def main() -> None:
@@ -131,7 +131,7 @@ def main() -> None:
         sys.exit("Feature view sync did not succeed.")
 
     print("\n4) online read, as an agent tool would do it")
-    print("  ", dealer_features(online, "dealer-4711"))
+    print("  ", tenant_features(online, "tenant-4711"))
 
 
 if __name__ == "__main__":

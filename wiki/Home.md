@@ -12,7 +12,7 @@ Welcome to the **AgentOps Governance Framework & SDK** Wiki — an open-source, 
 | [[Security-Auth-and-SQL-Governance]] | RS256/Entra/PEM `JWTAuthEngine`, JWKS SSRF guard, `SQLASTValidator`, scope-aware `RowLevelPolicyEngine`, Model Armor, Cloud DLP, `AuditLedger` |
 | [[Observability-and-FinOps]] | `configure_telemetry(mode="gcp\|otlp\|hybrid")`, `OtlpStdlibLogHandler`, `@trace_*`, `UseCaseTracker`, Log Router CLI, `examples/full_stack/` |
 | [[Memory-Prompts-and-Evaluation]] | `CloudSQLSessionMemory`, `VertexMemoryBank` (`memory_type` filtering), `CompositeMemory`, `PromptRegistry`, `VertexEvalTaskAdapter` (`gemini-3.8-flash`), Quality Gates |
-| [[MCP-Gateway-and-CICD]] | FastMCP Governance Gateway (`mcp_servers/src/`), `HeaderBindingMiddleware`, `FeatureStoreOnlineClient`, GitHub Actions & Cloud Build wheel pipelines |
+| [[MCP-Gateway-and-CICD]] | FastMCP Governance Gateway (`mcp_servers/src/`), `HeaderBindingMiddleware`, `FeatureStoreOnlineClient`, 40-SHA pinned GitHub Actions, `@sha256:` container digests & Cloud Build wheel pipelines |
 
 ## Quickstart (`v1.0.0`)
 

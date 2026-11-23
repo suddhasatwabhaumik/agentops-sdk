@@ -4,7 +4,7 @@
 
 ```
 bind_execution_scope(session_id, user_id)
-  └─ dealer_parts_advisor()  ── @trace_agent_flow ──► span  agent_flow:dealer_parts_advisor
+  └─ tenant_parts_advisor()  ── @trace_agent_flow ──► span  agent_flow:tenant_parts_advisor
        ├─ lookup_stock()     ── @trace_agent_span ──► span  agent_run:stock_lookup (child)
        └─ ask_gemini()       ── @trace_llm_call  ───► span  llm_call:ask_gemini + Vertex AI Gemini
                                                        └─ FinOps log record {model, tokens, latency,

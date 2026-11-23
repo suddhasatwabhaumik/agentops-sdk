@@ -95,8 +95,8 @@ mcp_servers/
       "args": ["-m", "mcp_servers.src.server", "--transport", "stdio"],
       "env": {
         "CONNECTOR_API_URL": "https://your-connector.europe-west4.run.app",
-        "MCP_ALLOWED_TABLES": "analytics.dealer_stock,analytics.parts",
-        "MCP_ALLOWED_ENTITY_TYPES": "dealer,inventory_sku"
+        "MCP_ALLOWED_TABLES": "analytics.tenant_inventory,analytics.parts",
+        "MCP_ALLOWED_ENTITY_TYPES": "tenant,inventory_sku"
       }
     }
   }

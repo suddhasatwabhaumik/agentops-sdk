@@ -167,13 +167,17 @@ page_1 = await memory.aget_messages(session_id="sess-1", limit=10, offset=0)
 [`CompositeMemory`](../sdk/src/agentops_sdk/memory/composite.py) orchestrates both ports cleanly:
 
 ```python
+import os
+
 from agentops_sdk.memory import (
     CloudSQLSessionMemory,
     CompositeMemory,
     VertexMemoryBank,
 )
 
-session_mem = CloudSQLSessionMemory(connection_url="postgresql+psycopg2://user:pass@127.0.0.1:5434/agentops")
+session_mem = CloudSQLSessionMemory(
+    connection_url=os.environ["DATABASE_URL"]
+)
 long_term_mem = VertexMemoryBank(
     reasoning_engine_name="projects/my-gcp-project/locations/europe-west4/reasoningEngines/123456789",
     project_id="my-gcp-project",
@@ -206,23 +210,33 @@ You can also call `consolidate_session(session_id, user_id, ...)` / `aconsolidat
 
 ## 7. FastAPI Integration Pattern
 
-```python
-from fastapi import FastAPI, Query
+All memory routes must verify caller Bearer tokens via `JWTAuthEngine`, return sanitized `401`/`403` errors without exposing exception details (`CWE-209`), and enforce caller ownership or admin roles (`CWE-862`) across every session and user memory endpoint:
 
+```python
+import os
+from typing import Any
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+
+from agentops_sdk.domain.exceptions import AuthenticationError
 from agentops_sdk.domain.models import ConversationTurn, MemoryItem
 from agentops_sdk.memory import (
     CloudSQLSessionMemory,
     CompositeMemory,
     VertexMemoryBank,
 )
+from agentops_sdk.security import JWTAuthEngine
 
 app = FastAPI(title="AgentOps Unified Memory Gateway")
+jwt_engine = JWTAuthEngine()
 
 session_memory = CloudSQLSessionMemory(
-    connection_url="postgresql+psycopg2://user:pass@127.0.0.1:5434/agentops"
+    connection_url=os.environ["DATABASE_URL"]
 )
 long_term_memory = VertexMemoryBank(
-    reasoning_engine_name="projects/my-project/locations/europe-west4/reasoningEngines/987654321",
+    reasoning_engine_name=(
+        "projects/my-project/locations/europe-west4/reasoningEngines/987654321"
+    ),
     project_id="my-project",
     location="europe-west4",
 )
@@ -231,48 +245,125 @@ composite = CompositeMemory(
 )
 
 
+def require_bearer_claims(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Bearer token.",
+        )
+    try:
+        return jwt_engine.decode_token(authorization, expected_type="access")
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired Bearer token.",
+        ) from exc
+
+
+def _require_owner_or_admin(claims: dict[str, Any], owner_id: str) -> None:
+    if claims.get("role") in {"admin", "superadmin"} or (
+        bool(owner_id) and claims.get("sub") == owner_id
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Forbidden: caller does not own target resource.",
+    )
+
+
 @app.post("/v1/chat/{session_id}/turn")
 async def record_chat_turn(
-    session_id: str, role: str, content: str, user_id: str | None = None
-):
+    session_id: str,
+    role: str,
+    content: str,
+    user_id: str,
+    claims: dict[str, Any] = Depends(require_bearer_claims),
+) -> dict[str, str]:
+    _require_owner_or_admin(claims, user_id)
+    scoped_session_id = f"{user_id}:{session_id}"
     await composite.aadd_message(
-        session_id=session_id, role=role, content=content, metadata={"user_id": user_id}
+        session_id=scoped_session_id,
+        role=role,
+        content=content,
+        metadata={"user_id": user_id},
     )
     return {"status": "recorded"}
 
 
 @app.get("/v1/chat/{session_id}/context")
-async def get_agent_context(session_id: str, user_id: str, query: str | None = None):
+async def get_agent_context(
+    session_id: str,
+    user_id: str,
+    query: str | None = None,
+    claims: dict[str, Any] = Depends(require_bearer_claims),
+) -> dict[str, Any]:
+    _require_owner_or_admin(claims, user_id)
+    scoped_session_id = f"{user_id}:{session_id}"
     return await composite.aget_context(
-        session_id=session_id, user_id=user_id, query=query, strict=False
+        session_id=scoped_session_id,
+        user_id=user_id,
+        query=query,
+        strict=False,
     )
 
 
-@app.get("/v1/chat/{session_id}/messages", response_model=list[ConversationTurn])
+@app.get(
+    "/v1/chat/{session_id}/messages",
+    response_model=list[ConversationTurn],
+)
 async def list_session_turns(
     session_id: str,
+    user_id: str,
     limit: int = Query(50, ge=1, le=200),
     before_id: int | None = None,
     after_id: int | None = None,
-):
+    claims: dict[str, Any] = Depends(require_bearer_claims),
+) -> list[ConversationTurn]:
+    _require_owner_or_admin(claims, user_id)
+    scoped_session_id = f"{user_id}:{session_id}"
     return await composite.aget_messages(
-        session_id=session_id, limit=limit, before_id=before_id, after_id=after_id
+        session_id=scoped_session_id,
+        limit=limit,
+        before_id=before_id,
+        after_id=after_id,
     )
 
 
 @app.post("/v1/users/{user_id}/facts")
-async def store_user_fact(user_id: str, fact: str, memory_type: str = "preference"):
-    await composite.acreate_memory(fact=fact, user_id=user_id, memory_type=memory_type)
+async def store_user_fact(
+    user_id: str,
+    fact: str,
+    memory_type: str = "preference",
+    claims: dict[str, Any] = Depends(require_bearer_claims),
+) -> dict[str, str]:
+    _require_owner_or_admin(claims, user_id)
+    await composite.acreate_memory(
+        fact=fact, user_id=user_id, memory_type=memory_type
+    )
     return {"status": "persisted"}
 
 
 @app.get("/v1/users/{user_id}/facts", response_model=list[MemoryItem])
-async def search_user_facts(user_id: str, query: str | None = None, limit: int = 5):
-    return await composite.aretrieve_memories(user_id=user_id, query=query, limit=limit)
+async def search_user_facts(
+    user_id: str,
+    query: str | None = None,
+    limit: int = 5,
+    claims: dict[str, Any] = Depends(require_bearer_claims),
+) -> list[MemoryItem]:
+    _require_owner_or_admin(claims, user_id)
+    return await composite.aretrieve_memories(
+        user_id=user_id, query=query, limit=limit
+    )
 
 
 @app.delete("/v1/users/{user_id}/facts")
-async def purge_user_facts(user_id: str):
+async def purge_user_facts(
+    user_id: str,
+    claims: dict[str, Any] = Depends(require_bearer_claims),
+) -> dict[str, Any]:
+    _require_owner_or_admin(claims, user_id)
     deleted = await composite.apurge_memories(user_id=user_id)
     return {"status": "purged", "count": deleted}
 ```

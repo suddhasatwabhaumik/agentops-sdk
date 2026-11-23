@@ -21,6 +21,7 @@ cfg = settings.load("14_audit_ledger")
 tel = telemetry.start(cfg)
 
 from google.api_core.exceptions import GoogleAPIError
+from google.cloud import bigquery
 
 from agentops_sdk import AuditLedger
 from agentops_sdk import AuditLogEntry
@@ -32,11 +33,11 @@ from agentops_sdk import validate_sql_query
 DATASET = "agentops_governance"
 TABLE = "audit_ledger"
 STOCK_TABLE = bq.tutorial_table()
-USER = "dealer-4711"
+USER = "tenant-4711"
 SESSION = f"session-{cfg.run_id}"
 
 # AuditLedger defaults to CloudLoggingAuditAdapter; select
-# BigQueryAuditAdapter explicitly when durable BigQuery compliance rows are needed.
+# BigQueryAuditAdapter explicitly when durable BigQuery rows are needed.
 LEDGER = AuditLedger(
     sink=BigQueryAuditAdapter(
         project_id=cfg.project,
@@ -81,14 +82,15 @@ async def audited_query(question: str, sql: str) -> int:
     return len(rows)
 
 
-def _read_back_rows() -> list[dict]:
+def _read_back_rows() -> list[dict[str, object]]:
     query = (
         "SELECT execution_status, rows_returned, generated_sql "
         f"FROM `{cfg.project}.{DATASET}.{TABLE}` "
-        f"WHERE session_id = '{SESSION}' ORDER BY timestamp"
+        "WHERE session_id = @session_id ORDER BY timestamp"
     )
+    params = [bigquery.ScalarQueryParameter("session_id", "STRING", SESSION)]
     for _ in range(6):
-        rows = bq.run(query)
+        rows = bq.run(query, params=params)
         if len(rows) >= 2:
             return rows
         time.sleep(5)
@@ -97,7 +99,7 @@ def _read_back_rows() -> list[dict]:
 
 @trace_agent_flow(
     flow_name="audit_ledger_demo",
-    kpi_id="dealer-parts-availability",
+    kpi_id="tenant-parts-availability",
     pl_impact_line="aftersales-opex",
 )
 async def main() -> None:

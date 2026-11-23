@@ -1,6 +1,6 @@
 # 03 · Rate Limiting: Keyed Quotas per Tenant as Metrics (`v1.0.0`)
 
-**What you learn:** how to enforce per-dealer request quotas and max-concurrency caps on async tools, handle `RateLimitExceededError`, and observe allowed vs rejected counts in Prometheus.
+**What you learn:** how to enforce per-tenant request quotas and max-concurrency caps on async tools, handle `RateLimitExceededError`, and observe allowed vs rejected counts in Prometheus.
 
 ```
 12 calls ──► fetch_price @rate_limit(rule_id="price-lookup", rate=5, period_seconds=10, key_func=price_key)
@@ -23,7 +23,7 @@
 | `RateLimitAlgorithm.SLIDING_WINDOW` / `TOKEN_BUCKET` | Exact sliding-window call counting vs token-bucket burst smoothing |
 | `RateLimitExceededError` | Raised cleanly when a call violates quota or concurrency limits (`wait_timeout_seconds=0.0`) |
 
-Design note: keying by `rule_id` alongside `key_func` prevents two decorated tools sharing a dealer key from colliding inside the same limiter state.
+Design note: keying by `rule_id` alongside `key_func` prevents two decorated tools sharing a tenant key from colliding inside the same limiter state.
 
 ## GCP resources used
 

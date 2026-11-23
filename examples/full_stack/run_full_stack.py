@@ -158,14 +158,14 @@ def run_single_target(args: argparse.Namespace, target: str) -> int:
         return _assert_hermetic_ledger(ledger)
     if args.no_validate:
         return 0
-    validator = TelemetryValidator(
+    with TelemetryValidator(
         prometheus_url=args.prometheus_url,
         tempo_url=args.tempo_url,
         loki_url=args.loki_url,
         grafana_url=args.grafana_url,
         timeout_seconds=args.timeout,
-    )
-    results = validator.validate(ledger)
+    ) as validator:
+        results = validator.validate(ledger)
     return print_report(ledger, results, grafana_url=args.grafana_url)
 
 

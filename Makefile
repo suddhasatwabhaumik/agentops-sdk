@@ -88,7 +88,7 @@ lint:
 	$(RUFF) format --check sdk/src/ mcp_servers/src/ tests/ tools/ examples/
 
 typecheck:
-	$(MYPY) --strict sdk/src/agentops_sdk mcp_servers/src
+	$(MYPY) --strict sdk/src/agentops_sdk mcp_servers/src tools
 
 test:
 	$(PYTEST) -v tests/unit tests/contract --eval-mode=in_memory

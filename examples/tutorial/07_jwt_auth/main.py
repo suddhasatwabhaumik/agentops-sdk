@@ -22,7 +22,7 @@ from agentops_sdk import JWTAuthEngine
 from agentops_sdk import SecretManagerStore
 from agentops_sdk.domain.exceptions import AuthenticationError
 
-USER = "dealer-4711"
+USER = "tenant-4711"
 STORE_TOKEN = os.getenv("TUTORIAL_STORE_TOKEN", "0") == "1"
 
 
@@ -33,7 +33,7 @@ def main() -> None:
     engine = JWTAuthEngine(secret_key=signing_key, access_ttl_seconds=900)
 
     token = engine.create_access_token(
-        claims={"sub": USER, "role": "dealer", "region": "EMEA"}
+        claims={"sub": USER, "role": "tenant_user", "region": "EMEA"}
     )
     print(f"1) issued access token: {token[:28]}... ({len(token)} chars)")
 

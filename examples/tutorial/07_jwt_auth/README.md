@@ -9,7 +9,7 @@ SecretManagerStore.get_secret("adk-jwt-secret-key")
 JWTAuthEngine(secret_key=signing_key, access_ttl_seconds=900)
   ├─ .create_access_token(claims)               ──► HS256 JWT (15-min TTL)
   ├─ .decode_token(token, expected_type="access") ──► verified claims (raises AuthenticationError on tamper/expiry)
-  └─ TUTORIAL_STORE_TOKEN=1 (opt-in)            ──► store.put_secret("agentops-tutorial-token-unit-001", token)
+  └─ TUTORIAL_STORE_TOKEN=1 (opt-in)            ──► store.put_secret("agentops-tutorial-token-tenant-4711", token)
 ```
 
 ## SDK calls used
@@ -28,7 +28,7 @@ JWTAuthEngine(secret_key=signing_key, access_ttl_seconds=900)
 | Resource | Why | Access needed |
 |---|---|---|
 | Secret Manager secret `adk-jwt-secret-key` | HS256 signing key (read) | `roles/secretmanager.secretAccessor` |
-| Secret Manager secret `agentops-tutorial-token-unit-001` | Opt-in persistence when `TUTORIAL_STORE_TOKEN=1` | `roles/secretmanager.admin` |
+| Secret Manager secret `agentops-tutorial-token-tenant-4711` | Opt-in persistence when `TUTORIAL_STORE_TOKEN=1` | `roles/secretmanager.admin` |
 
 ## Run
 

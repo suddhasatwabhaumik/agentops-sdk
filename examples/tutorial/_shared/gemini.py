@@ -37,7 +37,7 @@ def model_name() -> str:
 def generate(
     prompt: str, *, system: str | None = None, response_schema: Any = None
 ) -> Any:
-    """Single-turn generation. `response_schema` (a Pydantic model) forces JSON output."""
+    """Single-turn generation; `response_schema` enforces JSON output."""
     config = types.GenerateContentConfig(
         system_instruction=system,
         temperature=0.2,

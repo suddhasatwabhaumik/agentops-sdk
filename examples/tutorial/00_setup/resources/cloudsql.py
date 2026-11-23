@@ -6,18 +6,49 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import secrets
 import subprocess
 
 INSTANCE = "agentops-tutorial"
 DATABASE = "agentops"
 USER = "agentops"
+_SENSITIVE_FLAGS = frozenset({"--password", "--token", "--secret", "--api-key"})
+
+
+def _redact_cli_args(args: Sequence[str]) -> list[str]:
+    """Mask sensitive CLI flag values in inline and two-argument forms."""
+    redacted: list[str] = []
+    mask_next = False
+    for arg in args:
+        if mask_next:
+            redacted.append("***REDACTED***")
+            mask_next = False
+            continue
+        flag, sep, _ = arg.partition("=")
+        if sep and flag.lower() in _SENSITIVE_FLAGS:
+            redacted.append(f"{flag}=***REDACTED***")
+        elif not sep and arg.lower() in _SENSITIVE_FLAGS:
+            redacted.append(arg)
+            mask_next = True
+        else:
+            redacted.append(arg)
+    return redacted
 
 
 def _gcloud(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     cmd = ["gcloud", *args, "--quiet"]
-    print("  $", " ".join(cmd))
-    return subprocess.run(cmd, check=check, text=True, capture_output=True)
+    redacted = _redact_cli_args(cmd)
+    print("  $", " ".join(redacted))
+    try:
+        return subprocess.run(cmd, check=check, text=True, capture_output=True)
+    except subprocess.CalledProcessError as exc:
+        raise subprocess.CalledProcessError(
+            exc.returncode,
+            redacted,
+            output=exc.output,
+            stderr=exc.stderr,
+        ) from None
 
 
 def _ensure_instance(project: str, location: str) -> None:

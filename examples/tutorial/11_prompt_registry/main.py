@@ -28,7 +28,7 @@ PROMPT_ID = "agentops_tutorial_parts_advisor"
 
 
 @trace_llm_call(
-    kpi_id="dealer-parts-availability",
+    kpi_id="tenant-parts-availability",
     pl_impact_line="aftersales-opex",
 )
 def ask(prompt: str, system: str | None):
@@ -41,21 +41,21 @@ def _register_sample_versions(registry: PromptRegistry) -> None:
         PROMPT_ID,
         version="1.0.0",
         template=(
-            "You are an enterprise parts advisor supporting dealer "
-            "{{dealer_id}} for a Google Customer. Question: {{question}}"
+            "You are an enterprise parts advisor supporting tenant "
+            "{{tenant_id}} for a Google Customer. Question: {{question}}"
         ),
-        variables=["dealer_id", "question"],
+        variables=["tenant_id", "question"],
         description="first wording",
     )
     registry.register_prompt(
         PROMPT_ID,
         version="1.1.0",
         template=(
-            "You are an enterprise parts advisor supporting dealer "
-            "{{dealer_id}} in {{region}} for a Google Customer.\n"
+            "You are an enterprise parts advisor supporting tenant "
+            "{{tenant_id}} in {{region}} for a Google Customer.\n"
             "Answer in two sentences. Question: {{question}}"
         ),
-        variables=["dealer_id", "region", "question"],
+        variables=["tenant_id", "region", "question"],
         description="adds region and length limit",
         system_instruction="Never invent part numbers.",
         model_name=gemini.model_name(),
@@ -64,7 +64,7 @@ def _register_sample_versions(registry: PromptRegistry) -> None:
 
 @trace_agent_flow(
     flow_name="prompt_registry_demo",
-    kpi_id="dealer-parts-availability",
+    kpi_id="tenant-parts-availability",
     pl_impact_line="aftersales-opex",
 )
 def main() -> None:
@@ -84,7 +84,7 @@ def main() -> None:
     rendered = registry.render_prompt(
         PROMPT_ID,
         {
-            "dealer_id": "4711",
+            "tenant_id": "tenant-4711",
             "region": "Germany",
             "question": "Which oil filter fits a Series-700?",
         },

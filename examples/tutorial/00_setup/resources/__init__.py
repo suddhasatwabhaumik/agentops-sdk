@@ -1,1 +1,1 @@
-"""One module per GCP resource the tutorials need. Each `ensure()` is idempotent."""
+"""Provisioning helpers for GCP tutorial resources; each is idempotent."""

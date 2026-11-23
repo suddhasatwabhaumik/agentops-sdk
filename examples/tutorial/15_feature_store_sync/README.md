@@ -3,7 +3,7 @@
 **What you learn:** how to provision a Bigtable-backed Vertex AI Feature Online Store, bind a BigQuery offline table as a Feature View, trigger synchronization with `FeatureStoreAdminClient`, and fetch sub-10ms online features in an agent tool via `FeatureStoreOnlineClient`.
 
 ```
-BigQuery agentops_tutorial.dealer_features ──► Feature View (bq:// source) ──sync──► Feature Online Store (Bigtable)
+BigQuery agentops_tutorial.tenant_features ──► Feature View (bq:// source) ──sync──► Feature Online Store (Bigtable)
    entity_id, feature_timestamp,                        │                                   │
    sales_30d_eur, open_backorders, country              └─ FeatureStoreAdminClient          └─ FeatureStoreOnlineClient
                                                            .trigger_sync()                      .read_online_features()
@@ -20,15 +20,15 @@ BigQuery agentops_tutorial.dealer_features ──► Feature View (bq:// source)
 | `FeatureStoreOnlineClient(project_id, location).read_online_features(store_id, view_id, *, entity_ids, features)` | Serves low-latency feature dictionaries by entity key (`read_online_features` / `aread_online_features`) |
 | `InMemoryFeatureOnlineStore` | Explicit in-memory double implementing `FeatureOnlineStorePort` for offline tests |
 
-In `main.py`, the offline table `agentops_tutorial.dealer_features` is created and seeded explicitly via `google.cloud.bigquery.Client` before calling `FeatureStoreAdminClient.ensure_feature_view(...)`.
+In `main.py`, the offline table `agentops_tutorial.tenant_features` is created and seeded explicitly via `google.cloud.bigquery.Client` before calling `FeatureStoreAdminClient.ensure_feature_view(...)`.
 
 ## GCP resources used and cost
 
 | Resource | Why | Access needed |
 |---|---|---|
-| BigQuery dataset `agentops_tutorial`, table `dealer_features` | Offline feature source (`europe-west4`) | `roles/bigquery.dataEditor` + `roles/bigquery.jobUser` |
+| BigQuery dataset `agentops_tutorial`, table `tenant_features` | Offline feature source (`europe-west4`) | `roles/bigquery.dataEditor` + `roles/bigquery.jobUser` |
 | Vertex AI Feature Online Store `agentops_tutorial_online_store` (1 Bigtable node — **billed while active**) | Online feature serving | `roles/aiplatform.featureStoreAdmin` to provision, `roles/aiplatform.featureStoreUser` to read |
-| Feature View `dealer_features_view` | Binding + sync state | Same as above |
+| Feature View `tenant_features_view` | Binding + sync state | Same as above |
 
 Both the BigQuery dataset and the Vertex AI Feature Online Store must reside in the same region (`europe-west4`).
 
@@ -38,4 +38,4 @@ Both the BigQuery dataset and the Vertex AI Feature Online Store must reside in 
 python examples/tutorial/15_feature_store_sync/main.py
 ```
 
-Expected: seeds `2` rows in `agentops_tutorial.dealer_features`, ensures `agentops_tutorial_online_store` is `ACTIVE`, syncs `dealer_features_view` (`SUCCEEDED`), and prints the online feature values fetched for `dealer-4711`. The very first store creation and sync take several minutes.
+Expected: seeds `2` rows in `agentops_tutorial.tenant_features`, ensures `agentops_tutorial_online_store` is `ACTIVE`, syncs `tenant_features_view` (`SUCCEEDED`), and prints the online feature values fetched for `tenant-4711`. The very first store creation and sync take several minutes.

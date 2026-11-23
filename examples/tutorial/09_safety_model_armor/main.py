@@ -26,11 +26,11 @@ from agentops_sdk import bind_execution_scope
 from agentops_sdk import trace_agent_flow
 from agentops_sdk import trace_llm_call
 
-USER = "dealer-4711"
+USER = "tenant-4711"
 
 
 @trace_llm_call(
-    kpi_id="dealer-parts-availability",
+    kpi_id="tenant-parts-availability",
     pl_impact_line="aftersales-opex",
 )
 def ask(prompt: str):
@@ -82,7 +82,7 @@ def _build_guard() -> SecurityGuard:
 
 @trace_agent_flow(
     flow_name="model_armor_demo",
-    kpi_id="dealer-parts-availability",
+    kpi_id="tenant-parts-availability",
     pl_impact_line="aftersales-opex",
 )
 def main() -> None:
